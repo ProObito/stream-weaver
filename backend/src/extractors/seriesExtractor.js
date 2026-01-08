@@ -78,23 +78,33 @@ async function extractSeries(url) {
 
 /**
  * Run batch extraction for multiple series
+ * Automatically skips already completed series
  * @param {number} limit - Number of series to extract
  * @returns {Object} Batch result
  */
 async function runBatchExtraction(limit = 8) {
   console.log(`\n🚀 Starting batch extraction (limit: ${limit})`);
   
+  // getSeriesUrls already filters out completed series
   const urls = await getSeriesUrls(limit);
   
   if (urls.length === 0) {
-    console.log('⚠️ No series URLs found to extract');
-    return { success: false, reason: 'No URLs configured' };
+    console.log('✅ All series already extracted! Nothing new to process.');
+    return { 
+      success: true, 
+      reason: 'All series already completed',
+      total: 0,
+      skipped: 'all'
+    };
   }
+
+  console.log(`📝 Found ${urls.length} new series to extract`);
 
   const results = {
     total: urls.length,
     success: 0,
     failed: 0,
+    skipped: 0,
     details: []
   };
 
@@ -103,17 +113,19 @@ async function runBatchExtraction(limit = 8) {
     
     if (result.success) {
       results.success++;
+    } else if (result.reason === 'Already extracting') {
+      results.skipped++;
     } else {
       results.failed++;
     }
     
     results.details.push({ url, ...result });
     
-    // Small delay between series
+    // Small delay between series to avoid rate limiting
     await new Promise(r => setTimeout(r, 2000));
   }
 
-  console.log(`\n📊 Batch complete: ${results.success}/${results.total} successful`);
+  console.log(`\n📊 Batch complete: ${results.success} success, ${results.failed} failed, ${results.skipped} skipped`);
   return results;
 }
 
