@@ -1,4 +1,5 @@
 const express = require('express');
+const { getExtractionStats, resetFailedSeries } = require('../services/sourceApi.service');
 const router = express.Router();
 const Series = require('../models/Series');
 const Episode = require('../models/Episode');
@@ -129,6 +130,36 @@ router.get('/:id/episodes', async (req, res) => {
     .lean();
 
     res.json({ success: true, data: episodes });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+/**
+ * GET /api/gallery/stats
+ * Get extraction progress stats
+ */
+router.get('/extraction/stats', async (req, res) => {
+  try {
+    const stats = await getExtractionStats();
+    res.json({ success: true, data: stats });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+/**
+ * POST /api/gallery/reset-failed
+ * Reset failed series to allow re-extraction
+ */
+router.post('/reset-failed', async (req, res) => {
+  try {
+    const count = await resetFailedSeries();
+    res.json({ 
+      success: true, 
+      message: `Reset ${count} failed series to pending`,
+      resetCount: count
+    });
   } catch (error) {
     res.status(500).json({ success: false, error: error.message });
   }
