@@ -1,73 +1,97 @@
-# Welcome to your Lovable project
+# Anime Extractor Backend
 
-## Project info
+Auto video extraction backend with Streamtape upload and MongoDB storage.
 
-**URL**: https://lovable.dev/projects/REPLACE_WITH_PROJECT_ID
+## Features
 
-## How can I edit this code?
+- 🚀 Auto-extract 8 series on deploy
+- ⏰ Every 12 hours batch extraction
+- 🎥 Highest quality (1080p) video selection
+- ☁️ Streamtape auto-upload
+- 🔍 Search & filter API (genre, year)
+- 📊 MongoDB for persistent storage
 
-There are several ways of editing your application.
+## Quick Start
 
-**Use Lovable**
+### 1. Install Dependencies
+```bash
+cd backend
+npm install
+```
 
-Simply visit the [Lovable Project](https://lovable.dev/projects/REPLACE_WITH_PROJECT_ID) and start prompting.
+### 2. Configure Environment
+```bash
+cp .env.example .env
+# Edit .env with your credentials
+```
 
-Changes made via Lovable will be committed automatically to this repo.
-
-**Use your preferred IDE**
-
-If you want to work locally using your own IDE, you can clone this repo and push changes. Pushed changes will also be reflected in Lovable.
-
-The only requirement is having Node.js & npm installed - [install with nvm](https://github.com/nvm-sh/nvm#installing-and-updating)
-
-Follow these steps:
-
-```sh
-# Step 1: Clone the repository using the project's Git URL.
-git clone <YOUR_GIT_URL>
-
-# Step 2: Navigate to the project directory.
-cd <YOUR_PROJECT_NAME>
-
-# Step 3: Install the necessary dependencies.
-npm i
-
-# Step 4: Start the development server with auto-reloading and an instant preview.
+### 3. Run Locally
+```bash
 npm run dev
 ```
 
-**Edit a file directly in GitHub**
+## Environment Variables
 
-- Navigate to the desired file(s).
-- Click the "Edit" button (pencil icon) at the top right of the file view.
-- Make your changes and commit the changes.
+| Variable | Description |
+|----------|-------------|
+| `MONGO_URI` | MongoDB connection string |
+| `SOURCE_API_KEY` | Your scraping API key |
+| `SOURCE_API_URL` | Scraping API endpoint |
+| `STREAMTAPE_LOGIN` | Streamtape account login |
+| `STREAMTAPE_KEY` | Streamtape API key |
+| `SERIES_URLS` | Comma-separated series URLs to extract |
+| `CRON_ENABLED` | Enable/disable 12hr cron (true/false) |
+| `PORT` | Server port (default: 3000) |
 
-**Use GitHub Codespaces**
+## API Endpoints
 
-- Navigate to the main page of your repository.
-- Click on the "Code" button (green button) near the top right.
-- Select the "Codespaces" tab.
-- Click on "New codespace" to launch a new Codespace environment.
-- Edit files directly within the Codespace and commit and push your changes once you're done.
+### Gallery
+- `GET /api/gallery` - List series with search/filter
+  - `?search=naruto` - Text search
+  - `?genre=action` - Filter by genre
+  - `?year=2023` - Filter by year
+  - `?page=1&limit=20` - Pagination
 
-## What technologies are used for this project?
+- `GET /api/gallery/genres` - Get all genres
+- `GET /api/gallery/years` - Get all years
+- `GET /api/gallery/:id` - Get series with episodes
+- `GET /api/gallery/:id/episodes` - Get episodes only
 
-This project is built with:
+### Admin
+- `POST /api/extract/trigger` - Manually trigger extraction
+- `GET /health` - Health check
 
-- Vite
-- TypeScript
-- React
-- shadcn-ui
-- Tailwind CSS
+## Deploy to Render
 
-## How can I deploy this project?
+1. Create new Web Service
+2. Connect your repo
+3. Build Command: `npm install`
+4. Start Command: `npm start`
+5. Add environment variables
 
-Simply open [Lovable](https://lovable.dev/projects/REPLACE_WITH_PROJECT_ID) and click on Share -> Publish.
+## Deploy to Railway
 
-## Can I connect a custom domain to my Lovable project?
+1. Create new project from GitHub
+2. Add MongoDB plugin
+3. Set environment variables
+4. Deploy!
 
-Yes, you can!
+## Quality Logic
 
-To connect a domain, navigate to Project > Settings > Domains and click Connect Domain.
+- **Storage**: Only 1080p (highest) is uploaded
+- **Streaming**: Streamtape handles adaptive quality
+- **Frontend**: User can change quality in player
 
-Read more here: [Setting up a custom domain](https://docs.lovable.dev/features/custom-domain#custom-domain)
+## Frontend Integration
+
+```javascript
+// Fetch series
+const response = await fetch('https://your-backend.com/api/gallery');
+const { data } = await response.json();
+
+// Search
+const search = await fetch('/api/gallery?search=attack&genre=action');
+
+// Get series with episodes
+const series = await fetch('/api/gallery/SERIES_ID');
+```
