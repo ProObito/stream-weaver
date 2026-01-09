@@ -1,8 +1,5 @@
 const axios = require('axios');
 
-/**
- * AniList se High Quality info fetch karne ke liye
- */
 async function getAnilistInfo(title) {
   const query = `
     query ($search: String) {
@@ -34,7 +31,6 @@ async function getAnilistInfo(title) {
       rating: data.averageScore
     };
   } catch (err) {
-    console.log(`⚠️ AniList info not found for: ${title}`);
     return null;
   }
 }
