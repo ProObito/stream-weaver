@@ -1,87 +1,64 @@
-const { pickBestQuality } = require('../utils/qualitySelector');
+const axios = require('axios');
+const fs = require('fs');
+const path = require('path');
 const { uploadToStreamtape } = require('../services/streamtape.service');
 const Episode = require('../models/Episode');
 
-/**
- * Extract and upload episodes for a series
- * @param {Object} series - Series document from DB
- * @param {Array} episodes - Episodes data from source API
- * @returns {Object} Extraction result
- */
 async function extractAndUploadEpisodes(series, episodes) {
-  const results = {
-    success: 0,
-    failed: 0,
-    skipped: 0,
-    errors: []
-  };
+  const tempDir = path.join(__dirname, '../temp');
+  if (!fs.existsSync(tempDir)) fs.mkdirSync(tempDir);
 
   for (const ep of episodes) {
+    // Check if episode already exists
+    const existing = await Episode.findOne({ seriesId: series._id, episodeNumber: ep.episode });
+    if (existing) continue;
+
+    const tempFilePath = path.join(tempDir, `${series._id}_${ep.episode}.mp4`);
+    
     try {
-      // Check if episode already exists
-      const existing = await Episode.findOne({
-        seriesId: series._id,
-        episodeNumber: ep.episode
+      console.log(`📥 Downloading Ep ${ep.episode}: ${series.title}`);
+      
+      // 1. Download to Server
+      const response = await axios({
+        url: ep.streams[0]?.link, // Aapke source se aane wala direct link
+        method: 'GET',
+        responseType: 'stream'
       });
 
-      if (existing && existing.status === 'ready') {
-        console.log(`⏭️ Episode ${ep.episode} already exists, skipping`);
-        results.skipped++;
-        continue;
-      }
+      const writer = fs.createWriteStream(tempFilePath);
+      response.data.pipe(writer);
 
-      // Pick best quality stream (1080p preferred)
-      const bestStream = pickBestQuality(ep.streams);
-      
-      if (!bestStream) {
-        console.log(`⚠️ No streams found for episode ${ep.episode}`);
-        results.failed++;
-        results.errors.push(`Episode ${ep.episode}: No streams available`);
-        continue;
-      }
+      await new Promise((resolve, reject) => {
+        writer.on('finish', resolve);
+        writer.on('error', reject);
+      });
 
-      console.log(`📤 Uploading Episode ${ep.episode} (${bestStream.quality})`);
+      // 2. Upload to Streamtape
+      console.log(`📤 Uploading to Streamtape...`);
+      const upload = await uploadToStreamtape(tempFilePath, `${series.title} - E${ep.episode}`);
 
-      // Upload to Streamtape
-      const uploadResult = await uploadToStreamtape(
-        bestStream.url,
-        `${series.title} - Episode ${ep.episode}`
-      );
-
-      if (!uploadResult.success) {
-        results.failed++;
-        results.errors.push(`Episode ${ep.episode}: ${uploadResult.error}`);
-        continue;
-      }
-
-      // Save to database
-      await Episode.findOneAndUpdate(
-        { seriesId: series._id, episodeNumber: ep.episode },
-        {
+      if (upload.success) {
+        // 3. Save to DB (Frontend display)
+        await Episode.create({
           seriesId: series._id,
           episodeNumber: ep.episode,
-          title: ep.title || `Episode ${ep.episode}`,
-          streamtapeUrl: uploadResult.url,
-          streamtapeId: uploadResult.fileId,
-          quality: bestStream.quality,
+          title: ep.title,
+          streamtapeUrl: upload.url, // Ye link frontend player mein jayega
           status: 'ready'
-        },
-        { upsert: true, new: true }
-      );
+        });
+        console.log(`✅ Success: Episode ${ep.episode} is live.`);
+      }
 
-      console.log(`✅ Episode ${ep.episode} uploaded successfully`);
-      results.success++;
-
-    } catch (error) {
-      console.error(`❌ Error processing episode ${ep.episode}:`, error.message);
-      results.failed++;
-      results.errors.push(`Episode ${ep.episode}: ${error.message}`);
+    } catch (err) {
+      console.error(`❌ Failed Episode ${ep.episode}:`, err.message);
+    } finally {
+      // 4. Always delete from server
+      if (fs.existsSync(tempFilePath)) {
+        fs.unlinkSync(tempFilePath);
+        console.log(`🗑️ Temp file deleted.`);
+      }
     }
   }
-
-  return results;
 }
 
-module.exports = {
-  extractAndUploadEpisodes
-};
+module.exports = { extractAndUploadEpisodes };
