@@ -6,9 +6,9 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
-    "build:dev": "vite build --mode development",
-    "lint": "eslint .",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "start": "node backend/src/server.js",
+    "heroku-postbuild": "npm install && cd backend && npm install && cd .. && npm run build"
   },
   "dependencies": {
     "@hookform/resolvers": "^3.10.0",
