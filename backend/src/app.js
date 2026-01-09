@@ -19,14 +19,11 @@ app.use('/api/stats', statsRoutes);
 app.post('/api/extract', async (req, res) => {
   const { url } = req.body;
   if (!url) return res.status(400).json({ error: 'URL required' });
-  
-  // Background process
   extractSeries(url).then(r => console.log('Extraction Finish:', r));
-  
   res.json({ message: 'Extraction started in background' });
 });
 
-// Gallery API (Frontend Display)
+// Gallery API
 app.get('/api/gallery', async (req, res) => {
   try {
     const series = await mongoose.model('Series').find({ status: 'completed' });
@@ -46,6 +43,5 @@ app.get('/api/series/:id', async (req, res) => {
   }
 });
 
-// --- SABSE ZAROORI LINE ---
-module.exports = app; 
-// --------------------------
+// ZAROORI: Sirf app export karo, listen mat karo
+module.exports = app;
