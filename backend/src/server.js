@@ -3,20 +3,20 @@ const express = require("express");
 const path = require("path");
 const mongoose = require("mongoose");
 
-const app = require("./app"); // app.js se express instance
-const { startStatusUpdater } = require("./services/cron.service");
+// __dirname ka sahi use karke paths fix kiye
+const app = require(path.join(__dirname, "app")); 
+const { startStatusUpdater } = require(path.join(__dirname, "services/cron.service"));
 
 const PORT = process.env.PORT || 3000;
 
 /* -------------------- FRONTEND (VITE BUILD) -------------------- */
 
-// dist folder path (root/dist)
-const distPath = path.join(__dirname, "../../dist");
+// dist folder path (backend/src ke bahar root mein dist folder)
+const distPath = path.resolve(__dirname, "../../dist");
 
-// static files
 app.use(express.static(distPath));
 
-// React Router support (API ke alawa sab index.html)
+// API ke alawa sab index.html (React Router)
 app.get(/^(?!\/api).*/, (req, res) => {
   res.sendFile(path.join(distPath, "index.html"));
 });
@@ -31,7 +31,6 @@ mongoose
     app.listen(PORT, () => {
       console.log(`🚀 Server running on port ${PORT}`);
 
-      // Cron jobs start
       try {
         startStatusUpdater();
         console.log("⏰ Status Updater Cron Started");
