@@ -1,64 +1,58 @@
-const axios = require('axios');
-const fs = require('fs');
-const path = require('path');
-const { uploadToStreamtape } = require('../services/streamtape.service');
 const Episode = require('../models/Episode');
+const { addRemoteUpload } = require('../services/streamtape.service');
 
-async function extractAndUploadEpisodes(series, episodes) {
-  const tempDir = path.join(__dirname, '../temp');
-  if (!fs.existsSync(tempDir)) fs.mkdirSync(tempDir);
+async function processEpisodes(series, episodeList) {
+  console.log(`🚀 Queueing ${episodeList.length} episodes for: ${series.title}`);
+  let queuedCount = 0;
 
-  for (const ep of episodes) {
-    // Check if episode already exists
-    const existing = await Episode.findOne({ seriesId: series._id, episodeNumber: ep.episode });
-    if (existing) continue;
-
-    const tempFilePath = path.join(tempDir, `${series._id}_${ep.episode}.mp4`);
-    
+  for (const epData of episodeList) {
     try {
-      console.log(`📥 Downloading Ep ${ep.episode}: ${series.title}`);
-      
-      // 1. Download to Server
-      const response = await axios({
-        url: ep.streams[0]?.link, // Aapke source se aane wala direct link
-        method: 'GET',
-        responseType: 'stream'
-      });
+      // Check if exists
+      let episode = await Episode.findOne({ seriesId: series._id, episodeNumber: epData.episode });
 
-      const writer = fs.createWriteStream(tempFilePath);
-      response.data.pipe(writer);
+      // Agar pehle se ready hai ya processing hai, toh skip karo
+      if (episode && (episode.status === 'ready' || episode.status === 'processing')) {
+        continue;
+      }
 
-      await new Promise((resolve, reject) => {
-        writer.on('finish', resolve);
-        writer.on('error', reject);
-      });
-
-      // 2. Upload to Streamtape
-      console.log(`📤 Uploading to Streamtape...`);
-      const upload = await uploadToStreamtape(tempFilePath, `${series.title} - E${ep.episode}`);
-
-      if (upload.success) {
-        // 3. Save to DB (Frontend display)
-        await Episode.create({
+      // Create Entry if new
+      if (!episode) {
+        episode = await Episode.create({
           seriesId: series._id,
-          episodeNumber: ep.episode,
-          title: ep.title,
-          streamtapeUrl: upload.url, // Ye link frontend player mein jayega
-          status: 'ready'
+          title: epData.title,
+          episodeNumber: epData.episode,
+          status: 'pending'
         });
-        console.log(`✅ Success: Episode ${ep.episode} is live.`);
       }
 
-    } catch (err) {
-      console.error(`❌ Failed Episode ${ep.episode}:`, err.message);
-    } finally {
-      // 4. Always delete from server
-      if (fs.existsSync(tempFilePath)) {
-        fs.unlinkSync(tempFilePath);
-        console.log(`🗑️ Temp file deleted.`);
+      // Get Link
+      const sourceLink = epData.streams[0]?.link;
+      if (!sourceLink) {
+        await episode.updateOne({ status: 'failed', errorReason: 'No source link found' });
+        continue;
       }
+
+      // Trigger Remote Upload
+      const remoteId = await addRemoteUpload(sourceLink);
+
+      if (remoteId) {
+        await episode.updateOne({
+          status: 'processing',
+          remoteId: remoteId,
+          progress: 0,
+          errorReason: null
+        });
+        queuedCount++;
+      } else {
+        await episode.updateOne({ status: 'failed', errorReason: 'API Request Failed' });
+      }
+
+    } catch (error) {
+      console.error(`Error queuing Ep ${epData.episode}:`, error.message);
     }
   }
+  
+  return queuedCount;
 }
 
-module.exports = { extractAndUploadEpisodes };
+module.exports = { processEpisodes };
