@@ -1,135 +1,65 @@
 const Series = require('../models/Series');
 const { fetchSeriesData, getSeriesUrls } = require('../services/sourceApi.service');
+const { getAnilistInfo } = require('../services/metadata.service'); // Naya import
 const { extractAndUploadEpisodes } = require('./videoExtractor');
 
 /**
- * Extract series data and upload episodes
- * @param {string} url - Series URL
- * @returns {Object} Extraction result
+ * Extract series with Hybrid Logic (Video from Source, Info from AniList)
  */
 async function extractSeries(url) {
-  console.log(`\n🎬 Extracting series from: ${url}`);
+  console.log(`\n🎬 Starting Hybrid Extraction: ${url}`);
   
   try {
-    // Check if already being extracted
     let series = await Series.findOne({ sourceUrl: url });
-    
-    if (series && series.status === 'extracting') {
-      console.log('⏳ Series already being extracted, skipping');
-      return { success: false, reason: 'Already extracting' };
-    }
+    if (series && series.status === 'extracting') return { success: false, reason: 'Already extracting' };
 
-    // Fetch data from source API
-    const data = await fetchSeriesData(url);
-    
-    if (!data || !data.title) {
-      throw new Error('Invalid data received from source API');
-    }
+    // 1. Source site se video links aur title nikalo (ZenRows use karke)
+    const sourceData = await fetchSeriesData(url);
+    if (!sourceData || !sourceData.title) throw new Error('Source site data failed');
 
-    // Create or update series in DB
+    // 2. AniList se HD metadata fetch karo
+    console.log(`🔍 Fetching AniList metadata for: ${sourceData.title}`);
+    const aniInfo = await getAnilistInfo(sourceData.title);
+
+    // 3. Database mein Save/Update (Merging)
     series = await Series.findOneAndUpdate(
       { sourceUrl: url },
       {
-        title: data.title,
-        cover: data.cover,
-        genres: data.genres,
-        year: data.year,
-        description: data.description,
+        title: sourceData.title,
+        // AniList ki info ko priority do, agar na mile toh source ki info use karo
+        cover: aniInfo?.cover || sourceData.cover, 
+        description: aniInfo?.description || sourceData.description,
+        genres: aniInfo?.genres || sourceData.genres,
+        year: aniInfo?.year || sourceData.year,
         sourceUrl: url,
         status: 'extracting'
       },
       { upsert: true, new: true }
     );
 
-    console.log(`📺 Series: ${series.title} (${data.episodes.length} episodes)`);
-
-    // Extract and upload episodes
-    const result = await extractAndUploadEpisodes(series, data.episodes);
-
-    // Update series status
-    await Series.findByIdAndUpdate(series._id, {
-      status: result.failed === data.episodes.length ? 'failed' : 'completed',
-      lastExtracted: new Date()
-    });
-
-    console.log(`✅ Series extraction complete: ${result.success} success, ${result.failed} failed, ${result.skipped} skipped`);
-
-    return {
-      success: true,
-      series: series.title,
-      ...result
-    };
-
-  } catch (error) {
-    console.error(`❌ Series extraction failed for ${url}:`, error.message);
+    // 4. Video upload logic (Wahi purana)
+    const uploadResult = await extractAndUploadEpisodes(series, sourceData.episodes);
     
-    // Mark as failed in DB
-    await Series.findOneAndUpdate(
-      { sourceUrl: url },
-      { status: 'failed' }
-    );
+    series.status = 'completed';
+    series.lastExtracted = new Date();
+    await series.save();
 
-    return {
-      success: false,
-      error: error.message
-    };
+    return { success: true, episodes: uploadResult };
+  } catch (error) {
+    console.error(`❌ Extraction Error:`, error.message);
+    return { success: false, error: error.message };
   }
 }
 
-/**
- * Run batch extraction for multiple series
- * Automatically skips already completed series
- * @param {number} limit - Number of series to extract
- * @returns {Object} Batch result
- */
+// Ye function wahi rahega jo pehle tha (Batch extraction ke liye)
 async function runBatchExtraction(limit = 8) {
-  console.log(`\n🚀 Starting batch extraction (limit: ${limit})`);
-  
-  // getSeriesUrls already filters out completed series
   const urls = await getSeriesUrls(limit);
-  
-  if (urls.length === 0) {
-    console.log('✅ All series already extracted! Nothing new to process.');
-    return { 
-      success: true, 
-      reason: 'All series already completed',
-      total: 0,
-      skipped: 'all'
-    };
-  }
-
-  console.log(`📝 Found ${urls.length} new series to extract`);
-
-  const results = {
-    total: urls.length,
-    success: 0,
-    failed: 0,
-    skipped: 0,
-    details: []
-  };
+  if (urls.length === 0) return { success: true, message: 'No pending series' };
 
   for (const url of urls) {
-    const result = await extractSeries(url);
-    
-    if (result.success) {
-      results.success++;
-    } else if (result.reason === 'Already extracting') {
-      results.skipped++;
-    } else {
-      results.failed++;
-    }
-    
-    results.details.push({ url, ...result });
-    
-    // Small delay between series to avoid rate limiting
+    await extractSeries(url);
     await new Promise(r => setTimeout(r, 2000));
   }
-
-  console.log(`\n📊 Batch complete: ${results.success} success, ${results.failed} failed, ${results.skipped} skipped`);
-  return results;
 }
 
-module.exports = {
-  extractSeries,
-  runBatchExtraction
-};
+module.exports = { extractSeries, runBatchExtraction };
