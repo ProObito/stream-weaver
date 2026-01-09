@@ -4,7 +4,7 @@ const mongoose = require('mongoose');
 const cors = require('cors');
 const { startStatusUpdater } = require('./services/cron.service');
 const statsRoutes = require('./routes/stats.routes');
-const { extractSeries } = require('./extractors/seriesextractor');
+const { extractSeries } = require('./extractors/seriesExtractor');
 
 const app = express();
 
