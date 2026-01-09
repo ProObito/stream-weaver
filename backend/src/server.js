@@ -1,9 +1,9 @@
 require('dotenv').config();
-const express = require('express'); // static serve ke liye zaroori hai
+const express = require('express');
 const path = require('path');
-const app = require('./app'); // Ye wahi app hai jo app.js se export hua
 const mongoose = require('mongoose');
-const { startCron, runInitialExtraction } = require('./cron/extractor.cron');
+const app = require('./app'); // app.js se express instance le raha hai
+const { startStatusUpdater } = require('./services/cron.service');
 
 const PORT = process.env.PORT || 3000;
 
@@ -11,28 +11,29 @@ const PORT = process.env.PORT || 3000;
 const distPath = path.join(__dirname, '../../dist');
 app.use(express.static(distPath));
 
-// API ke alawa saari requests index.html par bhej do
+// API ke alawa saari requests index.html par bhej do (React Router support)
 app.get(/^(?!\/api).+/, (req, res) => {
   res.sendFile(path.join(distPath, 'index.html'));
 });
 
-// MongoDB Connection
+// MongoDB Connection & Server Start
 mongoose.connect(process.env.MONGO_URI)
   .then(() => {
-    console.log('✅ MongoDB connected');
+    console.log('✅ MongoDB Connected');
     
     app.listen(PORT, () => {
       console.log(`🚀 Server running on port ${PORT}`);
       
-      runInitialExtraction();
-      
-      if (process.env.CRON_ENABLED === 'true') {
-        startCron();
-        console.log('⏰ Cron job scheduled');
+      // Cron service start
+      try {
+        startStatusUpdater();
+        console.log('⏰ Status Updater Cron Started');
+      } catch (e) {
+        console.log('Cron failed to start:', e.message);
       }
     });
   })
   .catch((err) => {
-    console.error('❌ MongoDB connection error:', err);
+    console.error('❌ MongoDB Connection Error:', err);
     process.exit(1);
   });
