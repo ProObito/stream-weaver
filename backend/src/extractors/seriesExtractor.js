@@ -1,65 +1,47 @@
 const Series = require('../models/Series');
-const { fetchSeriesData, getSeriesUrls } = require('../services/sourceApi.service');
-const { getAnilistInfo } = require('../services/metadata.service'); // Naya import
-const { extractAndUploadEpisodes } = require('./videoExtractor');
+const { fetchSeriesData } = require('../services/sourceApi.service');
+const { getAnilistInfo } = require('../services/metadata.service');
+const { processEpisodes } = require('./videoExtractor');
 
-/**
- * Extract series with Hybrid Logic (Video from Source, Info from AniList)
- */
 async function extractSeries(url) {
-  console.log(`\n🎬 Starting Hybrid Extraction: ${url}`);
+  console.log(`\n🎬 Starting Extraction: ${url}`);
   
   try {
-    let series = await Series.findOne({ sourceUrl: url });
-    if (series && series.status === 'extracting') return { success: false, reason: 'Already extracting' };
-
-    // 1. Source site se video links aur title nikalo (ZenRows use karke)
+    // 1. Fetch Source Data (ZenRows)
     const sourceData = await fetchSeriesData(url);
-    if (!sourceData || !sourceData.title) throw new Error('Source site data failed');
+    if (!sourceData || !sourceData.title) throw new Error('Source data failed');
 
-    // 2. AniList se HD metadata fetch karo
-    console.log(`🔍 Fetching AniList metadata for: ${sourceData.title}`);
+    // 2. Fetch Metadata (AniList)
     const aniInfo = await getAnilistInfo(sourceData.title);
 
-    // 3. Database mein Save/Update (Merging)
-    series = await Series.findOneAndUpdate(
+    // 3. Save/Update Series
+    const series = await Series.findOneAndUpdate(
       { sourceUrl: url },
       {
         title: sourceData.title,
-        // AniList ki info ko priority do, agar na mile toh source ki info use karo
-        cover: aniInfo?.cover || sourceData.cover, 
+        cover: aniInfo?.cover || sourceData.cover,
+        banner: aniInfo?.banner || '',
         description: aniInfo?.description || sourceData.description,
         genres: aniInfo?.genres || sourceData.genres,
         year: aniInfo?.year || sourceData.year,
-        sourceUrl: url,
-        status: 'extracting'
+        status: 'extracting',
+        lastExtracted: new Date()
       },
       { upsert: true, new: true }
     );
 
-    // 4. Video upload logic (Wahi purana)
-    const uploadResult = await extractAndUploadEpisodes(series, sourceData.episodes);
+    // 4. Start Remote Upload Process
+    const queuedCount = await processEpisodes(series, sourceData.episodes);
     
     series.status = 'completed';
-    series.lastExtracted = new Date();
     await series.save();
 
-    return { success: true, episodes: uploadResult };
+    return { success: true, queued: queuedCount };
   } catch (error) {
-    console.error(`❌ Extraction Error:`, error.message);
+    console.error(`❌ Series Extraction Error:`, error.message);
+    await Series.findOneAndUpdate({ sourceUrl: url }, { status: 'failed' });
     return { success: false, error: error.message };
   }
 }
 
-// Ye function wahi rahega jo pehle tha (Batch extraction ke liye)
-async function runBatchExtraction(limit = 8) {
-  const urls = await getSeriesUrls(limit);
-  if (urls.length === 0) return { success: true, message: 'No pending series' };
-
-  for (const url of urls) {
-    await extractSeries(url);
-    await new Promise(r => setTimeout(r, 2000));
-  }
-}
-
-module.exports = { extractSeries, runBatchExtraction };
+module.exports = { extractSeries };
