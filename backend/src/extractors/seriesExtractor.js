@@ -1,4 +1,5 @@
 const axios = require('axios');
+const cheerio = require('cheerio');
 const mongoose = require('mongoose');
 
 async function extractAndUpload(url, animeName, siteName, siteKey, skipCount = 0, languageTag) {
@@ -7,19 +8,23 @@ async function extractAndUpload(url, animeName, siteName, siteKey, skipCount = 0
         const Series = mongoose.model('Series');
 
         const response = await axios.get('https://api.zenrows.com/v1/', {
-            params: { 'url': url, 'apikey': siteKey, 'autoparse': 'true', 'premium_proxy': 'true' }
+            params: { 'url': url, 'apikey': siteKey, 'js_render': 'true', 'premium_proxy': 'true' }
         });
 
+        const $ = cheerio.load(response.data);
         let foundLinks = [];
-        if (response.data && response.data.links) {
-            response.data.links.forEach(l => {
-                if (l.href && /pixeldrain|gdrive|drive|stream|720p|1080p|download/.test(l.href.toLowerCase())) {
-                    foundLinks.push(l.href);
-                }
-            });
-        }
+
+        // Saare links scan karo jo download ya stream se related hain
+        $('a, button, [data-link]').each((i, el) => {
+            const link = $(el).attr('href') || $(el).attr('data-link') || '';
+            if (link && /pixeldrain|gdrive|drive|stream|720p|1080p|download|sharer|file/.test(link.toLowerCase())) {
+                foundLinks.push(link);
+            }
+        });
 
         let uniqueLinks = [...new Set(foundLinks)];
+        console.log(`🔗 Found ${uniqueLinks.length} links for ${animeName}`);
+
         if (uniqueLinks.length === 0) return;
 
         let series = await Series.findOneAndUpdate(
@@ -30,23 +35,14 @@ async function extractAndUpload(url, animeName, siteName, siteKey, skipCount = 0
 
         for (let i = 0; i < uniqueLinks.length; i++) {
             const epNum = i + 1;
+            const exists = await Episode.findOne({ seriesId: series._id, episodeNumber: epNum, language: languageTag });
 
-            // 🔍 EPISODE RESUME CHECK:
-            const exists = await Episode.findOne({ 
-                seriesId: series._id, 
-                episodeNumber: epNum, 
-                language: languageTag 
-            });
+            if (exists) continue;
 
-            if (exists) {
-                // Agar episode pehle se hai, toh upload skip karo
-                continue; 
-            }
-
-            console.log(`⏳ [NEW] Uploading: ${animeName} Ep ${epNum} [${languageTag}]`);
+            const finalTitle = `${animeName} - Ep ${epNum} [${languageTag}]`;
+            console.log(`⏳ Uploading: ${finalTitle}`);
             
             try {
-                const finalTitle = `${animeName} - Ep ${epNum} [${languageTag}]`;
                 const stUrl = `https://api.streamtape.com/file/remoteupload/add?login=${process.env.STREAMTAPE_LOGIN}&key=${process.env.STREAMTAPE_KEY}&url=${encodeURIComponent(uniqueLinks[i])}&name=${encodeURIComponent(finalTitle)}`;
                 const up = await axios.get(stUrl);
                 
@@ -61,9 +57,9 @@ async function extractAndUpload(url, animeName, siteName, siteKey, skipCount = 0
                     });
                 }
             } catch (err) { console.log("Upload Err"); }
-            await new Promise(r => setTimeout(r, 2000));
+            await new Promise(r => setTimeout(r, 1000));
         }
-    } catch (err) { console.log(`❌ Error extracting ${animeName}`); }
+    } catch (err) { console.log(`❌ Error in ${animeName}`); }
 }
 
 module.exports = { extractAndUpload };
