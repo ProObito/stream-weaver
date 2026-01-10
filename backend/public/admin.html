@@ -1,0 +1,205 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Anime Admin Control</title>
+    <style>
+        :root {
+            --bg: #0b0e14;
+            --card: #151921;
+            --accent: #00d2ff;
+            --success: #00ff88;
+            --text: #ffffff;
+            --secondary: #94a3b8;
+        }
+
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: var(--bg);
+            color: var(--text);
+            margin: 0;
+            padding: 15px;
+        }
+
+        .container { max-width: 600px; margin: 0 auto; }
+
+        /* Header & Stats */
+        header { border-bottom: 2px solid #1e293b; padding-bottom: 15px; margin-bottom: 20px; }
+        
+        .stats-row {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 15px;
+            margin-bottom: 20px;
+        }
+
+        .stat-card {
+            background: var(--card);
+            padding: 20px;
+            border-radius: 15px;
+            text-align: center;
+            border: 1px solid #2d3748;
+        }
+
+        .stat-card h2 { font-size: 2.5rem; margin: 0; color: var(--accent); }
+        .stat-card p { margin: 5px 0 0; color: var(--secondary); font-size: 0.9rem; }
+
+        /* Control Button */
+        .btn-container { text-align: center; margin-bottom: 30px; }
+        
+        #crawlBtn {
+            background: linear-gradient(135deg, #00d2ff 0%, #3a7bd5 100%);
+            color: white;
+            border: none;
+            padding: 18px 30px;
+            font-size: 1.1rem;
+            font-weight: bold;
+            border-radius: 12px;
+            width: 100%;
+            cursor: pointer;
+            box-shadow: 0 4px 15px rgba(0, 210, 255, 0.3);
+            transition: 0.3s;
+        }
+
+        #crawlBtn:disabled { background: #475569; opacity: 0.6; }
+
+        /* Recent Activity Table */
+        .activity-log {
+            background: var(--card);
+            border-radius: 15px;
+            padding: 15px;
+        }
+
+        .log-header {
+            display: flex;
+            justify-content: space-between;
+            font-size: 0.8rem;
+            color: var(--secondary);
+            text-transform: uppercase;
+            padding-bottom: 10px;
+            border-bottom: 1px solid #2d3748;
+        }
+
+        .log-item {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 12px 0;
+            border-bottom: 1px solid #1e293b;
+        }
+
+        .log-info h4 { margin: 0; font-size: 0.95rem; font-weight: 500; }
+        .log-info small { color: var(--secondary); font-size: 0.75rem; }
+
+        .badge {
+            font-size: 0.7rem;
+            padding: 3px 8px;
+            border-radius: 5px;
+            font-weight: bold;
+        }
+
+        .badge-desi { background: rgba(255, 187, 0, 0.2); color: #ffbb00; }
+        .badge-sub { background: rgba(0, 255, 136, 0.2); color: #00ff88; }
+        
+        .status-tag {
+            font-size: 0.7rem;
+            color: #94a3b8;
+            border-left: 2px solid var(--accent);
+            padding-left: 8px;
+        }
+
+    </style>
+</head>
+<body>
+
+    <div class="container">
+        <header>
+            <h1 style="margin:0; font-size: 1.5rem;">Admin Panel</h1>
+            <p style="color:var(--secondary); margin:5px 0;">Auto-Extraction Monitoring</p>
+        </header>
+
+        <div class="stats-row" id="statsContainer">
+            <div class="stat-card">
+                <h2 id="totalCount">0</h2>
+                <p>Total Series</p>
+            </div>
+            <div class="stat-card">
+                <h2 id="lastHour">0</h2>
+                <p>Latest Added</p>
+            </div>
+        </div>
+
+        <div class="btn-container">
+            <button id="crawlBtn" onclick="triggerCrawl()">🚀 RUN MEGA EXTRACTOR</button>
+            <p id="statusMsg" style="font-size: 0.8rem; margin-top: 10px; color: var(--secondary);">System Idle</p>
+        </div>
+
+        <div class="activity-log">
+            <div class="log-header">
+                <span>Recent Extraction</span>
+                <span>Source</span>
+            </div>
+            <div id="logList">
+                </div>
+        </div>
+    </div>
+
+    <script>
+        const API = window.location.origin + '/api/admin';
+
+        async function updateDashboard() {
+            try {
+                const res = await fetch(`${API}/summary`);
+                const data = await res.json();
+
+                document.getElementById('totalCount').innerText = data.total;
+                
+                const logList = document.getElementById('logList');
+                if (data.recentlyAdded.length > 0) {
+                    logList.innerHTML = data.recentlyAdded.map(item => `
+                        <div class="log-item">
+                            <div class="log-info">
+                                <h4>${item.title}</h4>
+                                <div class="status-tag">${item.language || 'Multi'}</div>
+                            </div>
+                            <div style="text-align:right">
+                                <span class="badge ${item.sourceSite === 'DesiDub' ? 'badge-desi' : 'badge-sub'}">
+                                    ${item.sourceSite}
+                                </span>
+                            </div>
+                        </div>
+                    `).join('');
+                }
+            } catch (err) {
+                console.error("Fetch Error:", err);
+            }
+        }
+
+        async function triggerCrawl() {
+            const btn = document.getElementById('crawlBtn');
+            const msg = document.getElementById('statusMsg');
+
+            btn.disabled = true;
+            btn.innerText = "⚡ RUNNING...";
+            msg.innerText = "Crawler is scanning all 4 sites. Check logs below.";
+            msg.style.color = "#00d2ff";
+
+            try {
+                await fetch(`${API}/start-mega-crawl`, { method: 'POST' });
+                setTimeout(() => {
+                    btn.disabled = false;
+                    btn.innerText = "🚀 RUN MEGA EXTRACTOR";
+                }, 5000);
+            } catch (err) {
+                btn.disabled = false;
+                msg.innerText = "Error starting crawler.";
+            }
+        }
+
+        // Auto Refresh
+        setInterval(updateDashboard, 5000);
+        updateDashboard();
+    </script>
+</body>
+</html>
