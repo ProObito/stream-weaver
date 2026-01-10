@@ -1,13 +1,12 @@
 const mongoose = require('mongoose');
 
 const seriesSchema = new mongoose.Schema({
-  title: { type: String, required: true },
-  sourceSite: { type: String }, 
-  sourceUrl: { type: String, unique: true },
+  title: { type: String, required: true, unique: true }, // Title unique rakho taaki sites merge ho sakein
   poster: String,
   plot: String,
   rating: String,
-  language: { type: String }, // Hindi Dubbed ya Hindi Subbed
+  // sourceUrl se unique hata diya taaki multiple sites ek hi series mein update kar sakein
+  sourceUrl: { type: String }, 
   status: { type: String, enum: ['pending', 'processing', 'completed'], default: 'pending' },
   createdAt: { type: Date, default: Date.now }
 });
