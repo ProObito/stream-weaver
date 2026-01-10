@@ -4,26 +4,46 @@ const { extractAndUpload } = require('../extractors/seriesExtractor');
 const mongoose = require('mongoose');
 
 async function crawlAllSites() {
-    // Model yahan load kar rahe hain taaki "Schema not found" error na aaye
     const Series = mongoose.model('Series');
     
+    // Yahan apni alag-alag accounts ki keys daal de
     const sites = [
-        { name: 'DesiDub', url: 'https://www.desidubanime.me/', selector: 'article a' },
-        { name: 'HindiSubAnime', url: 'http://HindiSubAnime.co', selector: '.post-title a, article a' },
-        { name: 'Lords Anime', url: 'https://www.lordsanime.in/all-anime-list/', selector: '.post-title a' },
-        { name: 'YBX Anime', url: 'https://ybxanime.com/', selector: 'a' }
+        { 
+            name: 'DesiDub', 
+            url: 'https://www.desidubanime.me/', 
+            apiKey: '700c782d212580adba1fd15d82df6257ecb8701c', // Account 1
+            selector: 'article a' 
+        },
+        { 
+            name: 'HindiSubAnime', 
+            url: 'http://HindiSubAnime.co', 
+            apiKey: '201c680bb6922b8860eeb532fa93efe21c195146', // Account 2
+            selector: '.post-title a, article a' 
+        },
+        { 
+            name: 'Lords Anime', 
+            url: 'https://www.lordsanime.in/all-anime-list/', 
+            apiKey: 'YAHAN_TEESRI_KEY_DAAL', // Account 3
+            selector: '.post-title a' 
+        },
+        { 
+            name: 'YBX Anime', 
+            url: 'https://ybxanime.com/', 
+            apiKey: 'YAHAN_CHOUTHI_KEY_DAAL', // Account 4
+            selector: 'a' 
+        }
     ];
 
-    console.log("🚀 Starting Mega Crawl...");
+    console.log("🚀 Multi-Key Mega Crawl Started...");
 
     for (const site of sites) {
         try {
-            console.log(`📡 Scanning Site: ${site.name}`);
+            console.log(`📡 Scanning: ${site.name} using Key: ${site.apiKey.substring(0,5)}...`);
             
             const res = await axios.get('https://api.zenrows.com/v1/', {
                 params: { 
                     'url': site.url, 
-                    'apikey': process.env.ZENROWS_API_KEY, 
+                    'apikey': site.apiKey, // Har site ki apni alag key use ho rahi hai
                     'premium_proxy': 'true',
                     'mode': 'auto' 
                 }
@@ -35,40 +55,29 @@ async function crawlAllSites() {
             $(site.selector).each((i, el) => {
                 const link = $(el).attr('href');
                 const title = $(el).text().trim();
-                
-                // Sirf valid links uthao jo 5 characters se bade hon
                 if (link && link.includes('http') && title.length > 5) {
-                    if (!links.find(a => a.link === link)) {
-                        links.push({ title, link });
-                    }
+                    if (!links.find(a => a.link === link)) links.push({ title, link });
                 }
             });
 
-            console.log(`📦 Found ${links.length} potential series on ${site.name}`);
-
             for (const item of links) {
-                // 🔥 STRICT DUPLICATE CHECK: Title match (Case Insensitive)
-                // Agar "Naruto" DB mein hai, toh "naruto" ko bhi skip karega
                 const exists = await Series.findOne({ 
                     title: { $regex: new RegExp(`^${item.title.replace(/[-\/\\^$*+?.()|[\]{}]/g, '\\$&')}$`, 'i') } 
                 });
 
                 if (exists) {
-                    console.log(`⏩ [SKIP] ${item.title} - Already exists in your library.`);
+                    console.log(`⏩ Skipping: ${item.title}`);
                     continue;
                 }
 
-                console.log(`🔥 [NEW] Extracting from ${site.name}: ${item.title}`);
-                await extractAndUpload(item.link, item.title, site.name);
-                
-                // 5 seconds delay taaki APIs block na karein
+                // Extractor ko bhi wahi key bhej rahe hain jo is site ki hai
+                await extractAndUpload(item.link, item.title, site.name, site.apiKey);
                 await new Promise(r => setTimeout(r, 5000));
             }
         } catch (err) {
-            console.log(`❌ Error scanning ${site.name}: ${err.message}`);
+            console.log(`❌ Error on ${site.name}: ${err.message}`);
         }
     }
-    console.log("🏁 All sites finished. Database is clean!");
 }
 
 module.exports = { crawlAllSites };
