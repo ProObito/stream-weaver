@@ -1,7 +1,7 @@
 {
   "name": "anime-extractor-backend",
   "version": "1.0.0",
-  "description": "Auto video extraction backend with Streamtape upload",
+  "description": "Auto anime extractor for Heroku",
   "main": "src/server.js",
   "scripts": {
     "start": "node src/server.js",
