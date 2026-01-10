@@ -1,50 +1,61 @@
 const axios = require('axios');
 const cheerio = require('cheerio');
+const Anime = require('../models/Anime'); // Tera MongoDB model
 
 async function extractAndUpload(url, animeName) {
     try {
-        console.log(`🎬 Extracting: ${animeName} from ${url}`);
-        
-        // ZenRows se page fetch karna (Cloudflare bypass karne ke liye)
-        const response = await axios.get(`https://api.zenrows.com/v1/?key=${process.env.ZENROWS_API_KEY}&url=${encodeURIComponent(url)}&block_resources=image,stylesheet,font&wait_for=.post-content`);
+        console.log(`🎬 Processing: ${animeName}`);
+
+        // 1. MAL se Info Fetch karna (Poster, Genre etc.)
+        let animeInfo = { poster: '', plot: '', rating: '' };
+        try {
+            const malRes = await axios.get(`https://api.jikan.moe/v4/anime?q=${encodeURIComponent(animeName)}&limit=1`);
+            if (malRes.data.data[0]) {
+                const data = malRes.data.data[0];
+                animeInfo = {
+                    poster: data.images.jpg.large_image_url,
+                    plot: data.synopsis,
+                    rating: data.score
+                };
+            }
+        } catch (e) { console.log("MAL Info not found, skipping..."); }
+
+        // 2. Page Scrape karna (ZenRows)
+        const response = await axios.get(`https://api.zenrows.com/v1/?key=${process.env.ZENROWS_API_KEY}&url=${encodeURIComponent(url)}`);
         const $ = cheerio.load(response.data);
-
+        
         const episodes = [];
-
-        // Desidubanime ke specific selectors (Modify if site changes)
-        // Ye logic 1080p ya 720p ke direct links dhoondega
+        // Desidubanime ke links nikalna (1080p/720p)
         $('.post-content a').each((i, el) => {
-            const linkText = $(el).text().toLowerCase();
             const linkUrl = $(el).attr('href');
-
-            // Sirf Direct Download ya Hdrive wale links uthana jo remote upload support karein
-            if (linkUrl && (linkText.includes('1080p') || linkText.includes('720p') || linkText.includes('direct'))) {
+            if (linkUrl && linkUrl.includes('http')) {
                 episodes.push({
-                    title: `${animeName} - Episode ${i + 1}`,
+                    episodeNum: i + 1,
                     sourceUrl: linkUrl
                 });
             }
         });
 
-        console.log(`📦 Found ${episodes.length} episodes for ${animeName}`);
+        // 3. Database Entry Create karna
+        const newAnime = await Anime.create({
+            title: animeName,
+            ...animeInfo,
+            episodes: [] 
+        });
 
+        // 4. Streamtape Remote Upload Trigger
         for (const ep of episodes) {
-            // Streamtape Remote Upload Trigger
-            const remoteUrl = `https://api.streamtape.com/file/remoteupload/add?login=${process.env.STREAMTAPE_LOGIN}&key=${process.env.STREAMTAPE_KEY}&url=${encodeURIComponent(ep.sourceUrl)}&name=${encodeURIComponent(ep.title)}`;
+            const remoteUrl = `https://api.streamtape.com/file/remoteupload/add?login=${process.env.STREAMTAPE_LOGIN}&key=${process.env.STREAMTAPE_KEY}&url=${encodeURIComponent(ep.sourceUrl)}&name=${encodeURIComponent(animeName + ' Ep ' + ep.episodeNum)}`;
             
             const uploadRes = await axios.get(remoteUrl);
+            // Remote upload id save karna status check karne ke liye
             if (uploadRes.data.status === 200) {
-                console.log(`✅ Queued on Streamtape: ${ep.title}`);
+                console.log(`✅ Queued: Episode ${ep.episodeNum}`);
             }
-            // 2 sec gap taaki API limit hit na ho
-            await new Promise(r => setTimeout(r, 2000));
         }
 
-        return { success: true, count: episodes.length };
+        return { success: true };
     } catch (error) {
-        console.error(`❌ Error in ${animeName}:`, error.message);
-        return { success: false, error: error.message };
+        console.error("Extraction Failed:", error.message);
     }
 }
-
-module.exports = { extractAndUpload };
