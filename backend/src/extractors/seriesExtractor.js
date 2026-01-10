@@ -1,67 +1,52 @@
 const axios = require('axios');
-const cheerio = require('cheerio');
+const { extractAndUpload } = require('../extractors/seriesExtractor');
 const mongoose = require('mongoose');
 
-async function extractAndUpload(url, animeName, siteName, siteKey, skipCount = 0) {
-    try {
-        const Series = mongoose.model('Series');
-        const Episode = mongoose.model('Episode');
+async function crawlAllSites() {
+    const Series = mongoose.model('Series');
+    const Episode = mongoose.model('Episode');
+    
+    const sites = [
+        { name: 'DesiDub', url: 'https://www.desidubanime.me/', selector: 'article a', lang: 'Multi', forceAll: true },
+        { name: 'HindiSubAnime', url: 'http://HindiSubAnime.co', selector: '.post-title a', lang: 'Hindi Sub', forceAll: true },
+        { name: 'Lords Anime', url: 'https://www.lordsanime.in/all-anime-list/', selector: '.entry-title a', lang: 'Hindi Sub', forceAll: false },
+        { name: 'YBX Anime', url: 'https://ybxanime.com/', selector: 'a[href*="/anime/"]', lang: 'Hindi Sub', forceAll: false }
+    ];
 
-        const response = await axios.get('https://api.zenrows.com/v1/', {
-            params: { 'url': url, 'apikey': siteKey, 'premium_proxy': 'true' }
-        });
-        const $ = cheerio.load(response.data);
-        
-        let allPotentialLinks = [];
-        $('a').each((i, el) => {
-            const link = $(el).attr('href');
-            if (link && link.includes('http') && !link.includes('google.com')) {
-                allPotentialLinks.push(link);
-            }
-        });
+    console.log("🚀 Custom Sequence Crawl Started...");
 
-        // Duplicates remove karo
-        let uniqueLinks = [...new Set(allPotentialLinks)];
+    for (const site of sites) {
+        try {
+            console.log(`📡 Targeting: ${site.name}`);
+            const res = await axios.get('https://api.zenrows.com/v1/', {
+                params: { 'url': site.url, 'apikey': '700c782d212580adba1fd15d82df6257ecb8701c', 'premium_proxy': 'true' }
+            });
 
-        // --- SMART FILTER: Sirf naye episodes uthao ---
-        if (uniqueLinks.length <= skipCount) {
-            console.log(`⏩ No new episodes on ${siteName} for ${animeName}`);
-            return;
-        }
+            const $ = require('cheerio').load(res.data);
+            let links = [];
 
-        const newLinks = uniqueLinks.slice(skipCount); // Pehle wale skip kar diye
-        console.log(`✨ Found ${newLinks.length} new episodes on ${siteName}`);
+            $(site.selector).each((i, el) => {
+                const title = $(el).text().trim();
+                const link = $(el).attr('href');
+                if (link && title.length > 5) links.push({ title, link });
+            });
 
-        let series = await Series.findOneAndUpdate(
-            { title: animeName },
-            { sourceSite: siteName, status: 'processing' },
-            { upsert: true, new: true }
-        );
-
-        for (let i = 0; i < newLinks.length; i++) {
-            const epNumber = skipCount + i + 1;
-            const epTitle = `${animeName} - Episode ${epNumber}`;
-            
-            console.log(`📤 Uploading New EP ${epNumber} to Streamtape...`);
-            
-            const stUrl = `https://api.streamtape.com/file/remoteupload/add?login=${process.env.STREAMTAPE_LOGIN}&key=${process.env.STREAMTAPE_KEY}&url=${encodeURIComponent(newLinks[i])}&name=${encodeURIComponent(epTitle)}`;
-            
-            try {
-                const up = await axios.get(stUrl);
-                if (up.data.status === 200) {
-                    await Episode.create({
-                        seriesId: series._id,
-                        title: epTitle,
-                        remoteId: up.data.result.id,
-                        status: 'pending'
-                    });
+            for (const item of links) {
+                let series = await Series.findOne({ title: { $regex: new RegExp(`^${item.title}$`, 'i') } });
+                
+                let skipCount = 0;
+                if (!site.forceAll && series) {
+                    // Lords aur YBX ke liye check karo kitne episodes already hain
+                    skipCount = await Episode.countDocuments({ seriesId: series._id });
                 }
-            } catch (e) { console.log("Streamtape Error"); }
-            await new Promise(r => setTimeout(r, 2000));
-        }
 
-        await Series.findByIdAndUpdate(series._id, { status: 'completed' });
-    } catch (err) { console.log("Extraction Failed"); }
+                console.log(`🔍 [${site.name}] Processing: ${item.title} | Mode: ${site.forceAll ? 'Grab All' : 'Fill Gaps'}`);
+                await extractAndUpload(item.link, item.title, site.name, '700c782d212580adba1fd15d82df6257ecb8701c', skipCount, site.lang);
+                
+                await new Promise(r => setTimeout(r, 2000));
+            }
+        } catch (err) { console.log(`❌ Error scanning ${site.name}`); }
+    }
 }
 
-module.exports = { extractAndUpload };
+module.exports = { crawlAllSites };
