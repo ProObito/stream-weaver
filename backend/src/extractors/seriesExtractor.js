@@ -1,76 +1,66 @@
 const axios = require('axios');
 const cheerio = require('cheerio');
-const Anime = require('../models/Anime'); // Check kar lena tera Model name 'Anime' hai ya 'Series'
+const mongoose = require('mongoose');
 
-async function extractAndUpload(url, animeName) {
+async function extractAndUpload(url, animeName, siteName) {
     try {
-        console.log(`🎬 Processing: ${animeName}`);
+        const Series = mongoose.model('Series');
+        const Episode = mongoose.model('Episode');
 
-        // 1. MAL (MyAnimeList) se Info Fetch karna
-        let animeInfo = { poster: '', plot: '', rating: '' };
+        // 1. MAL se Poster aur Info lena
+        let animeInfo = { poster: '', plot: '' };
         try {
-            const malRes = await axios.get(`https://api.jikan.moe/v4/anime?q=${encodeURIComponent(animeName)}&limit=1`);
-            if (malRes.data.data[0]) {
-                const data = malRes.data.data[0];
-                animeInfo = {
-                    poster: data.images.jpg.large_image_url,
-                    plot: data.synopsis,
-                    rating: data.score
-                };
+            const mal = await axios.get(`https://api.jikan.moe/v4/anime?q=${encodeURIComponent(animeName)}&limit=1`);
+            if (mal.data.data[0]) {
+                animeInfo.poster = mal.data.data[0].images.jpg.large_image_url;
+                animeInfo.plot = mal.data.data[0].synopsis;
             }
-        } catch (e) { console.log("⚠️ MAL Info not found, proceeding without it."); }
+        } catch (e) { console.log("MAL info skip."); }
 
-        // 2. Page Scrape karna (ZenRows se)
-        const response = await axios.get(`https://api.zenrows.com/v1/?key=${process.env.ZENROWS_API_KEY}&url=${encodeURIComponent(url)}&wait_for=.post-content`);
+        // 2. Page Scrape (ZenRows)
+        const response = await axios.get('https://api.zenrows.com/v1/', {
+            params: { 'url': url, 'apikey': process.env.ZENROWS_API_KEY, 'premium_proxy': 'true', 'mode': 'auto' }
+        });
         const $ = cheerio.load(response.data);
         
+        // Dub/Sub Logic
+        let lang = (siteName === "DesiDub") ? "Hindi Dubbed" : "Hindi Subbed";
+        if (animeName.toLowerCase().includes("dubbed")) lang = "Hindi Dubbed";
+
+        let series = await Series.findOneAndUpdate(
+            { title: animeName },
+            { ...animeInfo, sourceSite: siteName, sourceUrl: url, language: lang },
+            { upsert: true, new: true }
+        );
+
+        // 3. Finding Episode Links
         const episodes = [];
-        // Desidubanime ke links nikalna (Direct / Hdrive / GDF)
-        $('.post-content a').each((i, el) => {
-            const linkUrl = $(el).attr('href');
-            const linkText = $(el).text().toLowerCase();
-            
-            // Logic: Agar link hai aur video quality ya direct likha hai
-            if (linkUrl && linkUrl.includes('http')) {
-                 // Duplicate filtering simple logic
-                 if (!episodes.find(e => e.sourceUrl === linkUrl)) {
-                    episodes.push({
-                        episodeNum: episodes.length + 1,
-                        sourceUrl: linkUrl
-                    });
-                 }
+        $('a').each((i, el) => {
+            const link = $(el).attr('href');
+            const text = $(el).text().toLowerCase();
+            if (link && link.includes('http') && (text.includes('720p') || text.includes('1080p') || text.includes('direct') || link.includes('drive.google'))) {
+                episodes.push({ title: `${animeName} - Ep ${episodes.length + 1}`, url: link });
             }
         });
 
-        console.log(`📦 Found ${episodes.length} episodes for ${animeName}`);
-
-        // 3. Database Entry Create karna
-        // Dhyan dena: Tera model 'Series' hai ya 'Anime', wo yahan adjust karna
-        // Agar tera model file 'Series.js' hai, toh upar import bhi 'Series' karna
-        /* Example: const newSeries = await Series.create({ title: animeName, ...animeInfo });
-        */
-
-        // 4. Streamtape Remote Upload Trigger
+        // 4. Streamtape Remote Upload
         for (const ep of episodes) {
-            const remoteUrl = `https://api.streamtape.com/file/remoteupload/add?login=${process.env.STREAMTAPE_LOGIN}&key=${process.env.STREAMTAPE_KEY}&url=${encodeURIComponent(ep.sourceUrl)}&name=${encodeURIComponent(animeName + ' Ep ' + ep.episodeNum)}`;
-            
-            try {
-                const uploadRes = await axios.get(remoteUrl);
-                if (uploadRes.data.status === 200) {
-                    console.log(`✅ Queued on Streamtape: Episode ${ep.episodeNum}`);
-                }
-            } catch (err) {
-                console.error(`❌ Upload Failed for Ep ${ep.episodeNum}`);
+            const streamtapeUrl = `https://api.streamtape.com/file/remoteupload/add?login=${process.env.STREAMTAPE_LOGIN}&key=${process.env.STREAMTAPE_KEY}&url=${encodeURIComponent(ep.url)}&name=${encodeURIComponent(ep.title)} [${lang}]`;
+            const upRes = await axios.get(streamtapeUrl);
+            if (upRes.data.status === 200) {
+                await Episode.create({
+                    seriesId: series._id,
+                    title: ep.title,
+                    remoteId: upRes.data.result.id,
+                    status: 'pending'
+                });
             }
-            // 2 sec gap taaki API limit hit na ho
             await new Promise(r => setTimeout(r, 2000));
         }
 
-        return { success: true };
-    } catch (error) {
-        console.error("Extraction Failed:", error.message);
-        return { success: false, error: error.message };
-    }
+        await Series.findByIdAndUpdate(series._id, { status: 'completed' });
+        return true;
+    } catch (err) { console.error(err.message); return false; }
 }
 
 module.exports = { extractAndUpload };
