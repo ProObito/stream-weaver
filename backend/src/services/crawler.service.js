@@ -9,25 +9,19 @@ async function crawlAllSites() {
     const API_KEY = '201c680bb6922b8860eeb532fa93efe21c195146';
     
     const sites = [
-        { name: 'DesiDub', url: 'https://www.desidubanime.me', selector: 'article a, .post-title a', lang: 'Multi', forceAll: true },
-        { name: 'HindiSubAnime', url: 'http://HindiSubAnime.co', selector: '.post-title a, article a, h2 a', lang: 'Hindi Sub', forceAll: true },
-        { name: 'LordsAnime', url: 'https://www.lordsanime.in/all-anime-list/', selector: '.entry-title a, li a', lang: 'Hindi Sub', forceAll: false },
-        { name: 'YBXAnime', url: 'https://ybxanime.com/anime-list/', selector: 'a[href*="/anime/"]', lang: 'Hindi Sub', forceAll: false }
+        { name: 'DesiDub', url: 'https://www.desidubanime.me', selector: '.entry-title a, .post-title a', lang: 'Multi', forceAll: true },
+        { name: 'HindiSubAnime', url: 'http://HindiSubAnime.co', selector: '.entry-title a, .post-title a', lang: 'Hindi Sub', forceAll: true },
+        { name: 'LordsAnime', url: 'https://www.lordsanime.in/all-anime-list/', selector: '.entry-title a', lang: 'Hindi Sub', forceAll: false },
+        { name: 'YBXAnime', url: 'https://ybxanime.com/anime-list/', selector: '.entry-title a, .anime-card-title a', lang: 'Hindi Sub', forceAll: false }
     ];
 
-    console.log("🚀 Power Sync: Manual Selector + Resume Mode...");
+    console.log("🚀 Starting Clean Extraction (Anime Only)...");
 
     for (const site of sites) {
         try {
             console.log(`📡 Scanning: ${site.name}`);
-            
             const res = await axios.get('https://api.zenrows.com/v1/', {
-                params: { 
-                    'url': site.url, 
-                    'apikey': API_KEY, 
-                    'premium_proxy': 'true',
-                    'js_render': 'true' // Selectors ke liye JS render zaroori hai
-                }
+                params: { 'url': site.url, 'apikey': API_KEY, 'premium_proxy': 'true', 'js_render': 'true' }
             });
 
             const $ = cheerio.load(res.data);
@@ -36,33 +30,29 @@ async function crawlAllSites() {
             $(site.selector).each((i, el) => {
                 const title = $(el).text().trim();
                 const link = $(el).attr('href');
-                if (link && link.includes('http') && title.length > 3) {
-                    if (!/category|tag|contact|about|disclaimer|dmca/.test(link.toLowerCase())) {
-                        if (!animeLinks.find(a => a.link === link)) animeLinks.push({ title, link });
+                
+                // Filter: Sirf wo titles jo "Watch", "Download", "Okamura" type ke words nahi hain
+                const junkWords = /watch|download|now|series|episode|click|okamura|hirata|ai|cast|voice/i;
+                if (link && link.includes('http') && title.length > 5 && !junkWords.test(title)) {
+                    if (!animeLinks.find(a => a.link === link)) {
+                        animeLinks.push({ title, link });
                     }
                 }
             });
 
-            console.log(`✅ ${site.name}: Found ${animeLinks.length} Titles`);
+            console.log(`✅ ${site.name}: Found ${animeLinks.length} Real Anime`);
 
             for (const item of animeLinks) {
                 let series = await Series.findOne({ title: { $regex: new RegExp(`^${item.title}$`, 'i') } });
-                
-                if (series) {
-                    const existingCount = await Episode.countDocuments({ seriesId: series._id, language: site.lang });
-                    if (existingCount > 0 && !site.forceAll) {
-                        console.log(`⏩ Skip: ${item.title} (Already exists)`);
-                        continue;
-                    }
+                if (series && !site.forceAll) {
+                    const count = await Episode.countDocuments({ seriesId: series._id, language: site.lang });
+                    if (count > 0) continue;
                 }
 
-                console.log(`🎬 Extracting: ${item.title}`);
                 await extractAndUpload(item.link, item.title, site.name, API_KEY, 0, site.lang);
                 await new Promise(r => setTimeout(r, 2000));
             }
-        } catch (err) {
-            console.error(`❌ ${site.name} Error:`, err.message);
-        }
+        } catch (err) { console.error(`❌ ${site.name} Error`); }
     }
 }
 
