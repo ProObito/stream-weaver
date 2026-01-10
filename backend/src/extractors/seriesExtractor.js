@@ -7,70 +7,64 @@ async function extractAndUpload(url, animeName, siteName, siteKey) {
         const Series = mongoose.model('Series');
         const Episode = mongoose.model('Episode');
 
-        // Step 1: Get Page Data
-        const response = await axios.get('https://api.zenrows.com/v1/', {
-            params: { 
-                'url': url, 
-                'apikey': siteKey.trim(),
-                'premium_proxy': 'false' 
+        // 1. Fetch MAL Data for enrichment
+        let malData = { poster: '', plot: '' };
+        try {
+            const malRes = await axios.get(`https://api.jikan.moe/v4/anime?q=${encodeURIComponent(animeName)}&limit=1`);
+            if (malRes.data.data[0]) {
+                malData.poster = malRes.data.data[0].images.jpg.large_image_url;
+                malData.plot = malRes.data.data[0].synopsis;
             }
-        });
+        } catch (e) {}
 
+        // 2. Scrape the actual page
+        const response = await axios.get('https://api.zenrows.com/v1/', {
+            params: { 'url': url, 'apikey': siteKey.trim(), 'premium_proxy': 'false' }
+        });
         const $ = cheerio.load(response.data);
         
         let lang = (siteName === "DesiDub") ? "Hindi Dubbed" : "Hindi Subbed";
         if (animeName.toLowerCase().includes("dubbed")) lang = "Hindi Dubbed";
 
-        // Step 2: Save Series Initial Data
+        // 3. Save to DB with Poster and Plot
         let series = await Series.findOneAndUpdate(
             { title: animeName },
-            { sourceSite: siteName, sourceUrl: url, language: lang, status: 'processing' },
+            { 
+                sourceSite: siteName, 
+                sourceUrl: url, 
+                language: lang, 
+                poster: malData.poster, 
+                plot: malData.plot,
+                status: 'processing' 
+            },
             { upsert: true, new: true }
         );
 
-        // Step 3: Find Quality Links
         const episodes = [];
         $('a').each((i, el) => {
             const link = $(el).attr('href');
             const text = $(el).text().toLowerCase();
-            if (link && link.includes('http') && (text.includes('720p') || text.includes('1080p') || text.includes('download') || text.includes('direct'))) {
-                episodes.push({ title: `${animeName} - Episode ${episodes.length + 1}`, url: link });
+            if (link && link.includes('http') && (text.includes('720p') || text.includes('1080p') || text.includes('direct'))) {
+                episodes.push({ title: `${animeName} - Ep ${episodes.length + 1}`, url: link });
             }
         });
 
-        if (episodes.length === 0) {
-            console.log(`⚠️ No episodes found for ${animeName}`);
-            return false;
-        }
+        if (episodes.length === 0) return false;
 
-        // Step 4: Streamtape Remote Upload
         for (const ep of episodes) {
             try {
                 const stUrl = `https://api.streamtape.com/file/remoteupload/add?login=${process.env.STREAMTAPE_LOGIN}&key=${process.env.STREAMTAPE_KEY}&url=${encodeURIComponent(ep.url)}&name=${encodeURIComponent(ep.title)} [${lang}]`;
-                
                 const up = await axios.get(stUrl);
                 if (up.data.status === 200) {
-                    await Episode.create({
-                        seriesId: series._id,
-                        title: ep.title,
-                        remoteId: up.data.result.id,
-                        status: 'pending'
-                    });
+                    await Episode.create({ seriesId: series._id, title: ep.title, remoteId: up.data.result.id, status: 'pending' });
                 }
-            } catch (err) {
-                console.log(`   - Streamtape Skip: ${ep.title}`);
-            }
-            await new Promise(r => setTimeout(r, 1500));
+            } catch (err) {}
+            await new Promise(r => setTimeout(r, 1000));
         }
 
         await Series.findByIdAndUpdate(series._id, { status: 'completed' });
-        console.log(`✅ Completed: ${animeName}`);
+        console.log(`✅ Extracted & Enriched: ${animeName}`);
         return true;
-
-    } catch (err) {
-        console.log(`❌ Error extracting ${animeName}: ${err.message}`);
-        return false;
-    }
+    } catch (err) { return false; }
 }
-
 module.exports = { extractAndUpload };
