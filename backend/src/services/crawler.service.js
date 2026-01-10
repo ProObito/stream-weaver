@@ -1,57 +1,58 @@
 const axios = require('axios');
-const cheerio = require('cheerio');
 const { extractAndUpload } = require('../extractors/seriesExtractor');
 const mongoose = require('mongoose');
+const cron = require('node-cron');
 
 async function crawlAllSites() {
     const Series = mongoose.model('Series');
+    const Episode = mongoose.model('Episode');
+    
+    // Priority wise sites: 1. HindiSub, 2. Lords, 3. YBX
     const sites = [
-        { name: 'DesiDub', url: 'https://www.desidubanime.me/', apiKey: '700c782d212580adba1fd15d82df6257ecb8701c', selector: 'article a' },
-        { name: 'HindiSubAnime', url: 'http://HindiSubAnime.co', apiKey: '700c782d212580adba1fd15d82df6257ecb8701c', selector: '.post-title a, article a' }
+        { name: 'HindiSubAnime', url: 'http://HindiSubAnime.co', apiKey: '700c782d212580adba1fd15d82df6257ecb8701c', selector: '.post-title a' },
+        { name: 'Lords Anime', url: 'https://www.lordsanime.in/all-anime-list/', apiKey: '700c782d212580adba1fd15d82df6257ecb8701c', selector: '.post-title a' },
+        { name: 'YBX Anime', url: 'https://ybxanime.com/', apiKey: '700c782d212580adba1fd15d82df6257ecb8701c', selector: 'a[href*="/anime/"]' }
     ];
 
-    console.log("🚀 Smart Crawler v2.0 Started...");
+    console.log("🚀 Starting Smart Priority Crawl...");
 
     for (const site of sites) {
         try {
-            console.log(`📡 Scanning: ${site.name}`);
             const res = await axios.get('https://api.zenrows.com/v1/', {
-                params: { 'url': site.url, 'apikey': site.apiKey.trim(), 'js_render': 'false' }
+                params: { 'url': site.url, 'apikey': site.apiKey, 'js_render': 'true' }
             });
-
-            const $ = cheerio.load(res.data);
+            const $ = require('cheerio').load(res.data);
             const links = [];
 
             $(site.selector).each((i, el) => {
-                const link = $(el).attr('href');
                 const title = $(el).text().trim();
-                // Filter tags, categories, and short names (actors)
-                if (link && link.includes('http') && title.split(' ').length > 1 && !link.includes('/tag/') && !link.includes('/category/')) {
-                    if (!links.find(a => a.link === link)) links.push({ title, link });
-                }
+                const link = $(el).attr('href');
+                if (link && title.length > 5) links.push({ title, link });
             });
 
-            console.log(`📦 Found ${links.length} potential links on ${site.name}`);
-
             for (const item of links) {
-                if (await Series.findOne({ title: item.title })) continue;
+                // 1. Check if Series exists
+                let series = await Series.findOne({ title: item.title });
+                let existingEpCount = 0;
+                
+                if (series) {
+                    existingEpCount = await Episode.countDocuments({ seriesId: series._id });
+                }
 
-                // MAL Strict Check: Actor names usually don't have high 'members' count or 'TV' type in top result
-                try {
-                    const mal = await axios.get(`https://api.jikan.moe/v4/anime?q=${encodeURIComponent(item.title)}&limit=1`);
-                    const result = mal.data.data[0];
-                    
-                    if (!result || result.score < 1 || result.members < 100) {
-                        console.log(`⏩ Skipping junk/actor: ${item.title}`);
-                        continue;
-                    }
-                } catch (e) { console.log("MAL Limit - Continuing anyway"); }
+                console.log(`🧐 Checking ${item.title} on ${site.name}. Current EPs: ${existingEpCount}`);
 
-                console.log(`🔥 Starting Extraction: ${item.title}`);
-                await extractAndUpload(item.link, item.title, site.name, site.apiKey);
-                await new Promise(r => setTimeout(r, 3000));
+                // 2. Extract episodes from current site
+                // extractAndUpload ab sirf wahi episodes save karega jo existingEpCount se zyada honge
+                await extractAndUpload(item.link, item.title, site.name, site.apiKey, existingEpCount);
             }
-        } catch (err) { console.log(`❌ Error: ${err.message}`); }
+        } catch (err) { console.log(`❌ Error scanning ${site.name}`); }
     }
 }
+
+// --- CRON JOB: Raat 12 Baje Auto Run ---
+cron.schedule('0 0 * * *', () => {
+    console.log("🌙 Midnight Strike! Auto-extracting new episodes...");
+    crawlAllSites();
+}, { timezone: "Asia/Kolkata" });
+
 module.exports = { crawlAllSites };
