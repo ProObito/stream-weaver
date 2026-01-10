@@ -4,27 +4,36 @@ const mongoose = require('mongoose');
 
 async function extractAndUpload(url, animeName, siteName, siteKey, skipCount = 0, languageTag) {
     try {
-        const Series = mongoose.model('Series');
         const Episode = mongoose.model('Episode');
+        const Series = mongoose.model('Series');
 
+        // Lords/YBX ke pages pe JS Render hona zaroori hai
         const response = await axios.get('https://api.zenrows.com/v1/', {
-            params: { 'url': url, 'apikey': siteKey, 'js_render': 'true', 'premium_proxy': 'true' }
+            params: { 'url': url, 'apikey': siteKey, 'js_render': 'true', 'premium_proxy': 'true' },
+            timeout: 60000
         });
         const $ = cheerio.load(response.data);
         
-        let availableLinks = [];
-        $('a, button, [href]').each((i, el) => {
-            const link = $(el).attr('href') || $(el).attr('data-link');
-            if (link && link.includes('http') && /gdrive|pixeldrain|stream|720p|1080p|download/.test(link.toLowerCase())) {
-                availableLinks.push(link);
+        let foundLinks = [];
+        // Scan all possible link sources
+        $('a, button, [onclick], [data-link]').each((i, el) => {
+            const raw = $(el).attr('href') || $(el).attr('data-link') || $(el).attr('onclick') || '';
+            const link = raw.match(/https?:\/\/[^\s'"]+/); // Extract URL from string
+            
+            if (link && /pixeldrain|gdrive|drive|stream|720p|1080p|download|sharer/.test(link[0].toLowerCase())) {
+                foundLinks.push(link[0]);
             }
         });
 
-        let uniqueLinks = [...new Set(availableLinks)];
-
+        let uniqueLinks = [...new Set(foundLinks)];
+        
         // Skip logic for Lords/YBX
-        if (skipCount > 0 && uniqueLinks.length <= skipCount) return;
-        const linksToExtract = (skipCount > 0) ? uniqueLinks.slice(skipCount) : uniqueLinks;
+        if (uniqueLinks.length <= skipCount && skipCount !== 0) {
+            console.log(`⏩ No new episodes to add for ${animeName}`);
+            return;
+        }
+
+        const linksToProcess = (skipCount > 0) ? uniqueLinks.slice(skipCount) : uniqueLinks;
 
         let series = await Series.findOneAndUpdate(
             { title: animeName },
@@ -32,18 +41,18 @@ async function extractAndUpload(url, animeName, siteName, siteKey, skipCount = 0
             { upsert: true, new: true }
         );
 
-        for (let i = 0; i < linksToExtract.length; i++) {
-            const epNumber = (skipCount > 0) ? (skipCount + i + 1) : (i + 1);
-            const finalTitle = `${animeName} - Ep ${epNumber} [${languageTag}]`;
+        for (let i = 0; i < linksToProcess.length; i++) {
+            const epNum = skipCount + i + 1;
+            const finalTitle = `${animeName} - Ep ${epNum} [${languageTag}]`;
 
-            // Check if this exact episode from this exact site already exists
+            // Anti-duplicate check
             const exists = await Episode.findOne({ seriesId: series._id, title: finalTitle });
             if (exists) continue;
 
-            console.log(`📤 Uploading Ep ${epNumber} (${languageTag}) from ${siteName}`);
+            console.log(`📤 Uploading Ep ${epNum} [${languageTag}] to Streamtape...`);
             
             try {
-                const stUrl = `https://api.streamtape.com/file/remoteupload/add?login=${process.env.STREAMTAPE_LOGIN}&key=${process.env.STREAMTAPE_KEY}&url=${encodeURIComponent(linksToExtract[i])}&name=${encodeURIComponent(finalTitle)}`;
+                const stUrl = `https://api.streamtape.com/file/remoteupload/add?login=${process.env.STREAMTAPE_LOGIN}&key=${process.env.STREAMTAPE_KEY}&url=${encodeURIComponent(linksToProcess[i])}&name=${encodeURIComponent(finalTitle)}`;
                 const up = await axios.get(stUrl);
                 
                 if (up.data.status === 200) {
@@ -51,14 +60,14 @@ async function extractAndUpload(url, animeName, siteName, siteKey, skipCount = 0
                         seriesId: series._id,
                         title: finalTitle,
                         remoteId: up.data.result.id,
-                        episodeNumber: epNumber,
+                        episodeNumber: epNum,
                         language: languageTag,
                         status: 'pending'
                     });
                 }
-            } catch (err) { }
+            } catch (err) { console.log("Streamtape Err"); }
         }
-    } catch (err) { console.log(`❌ Error: ${err.message}`); }
+    } catch (err) { console.log(`❌ Error extracting ${animeName}`); }
 }
 
 module.exports = { extractAndUpload };
