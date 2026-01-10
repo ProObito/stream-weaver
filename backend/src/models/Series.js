@@ -2,22 +2,14 @@ const mongoose = require('mongoose');
 
 const seriesSchema = new mongoose.Schema({
   title: { type: String, required: true },
-  sourceUrl: { type: String, required: true, unique: true },
-  
-  // Metadata from AniList
-  cover: { type: String },
-  banner: { type: String },
-  description: { type: String },
-  genres: [String],
-  year: { type: Number },
-  rating: { type: Number },
-
-  status: { 
-    type: String, 
-    enum: ['pending', 'extracting', 'completed', 'failed'],
-    default: 'pending'
-  },
-  lastExtracted: { type: Date }
-}, { timestamps: true });
+  sourceSite: { type: String }, 
+  sourceUrl: { type: String, unique: true },
+  poster: String,
+  plot: String,
+  rating: String,
+  language: { type: String }, // Hindi Dubbed ya Hindi Subbed
+  status: { type: String, enum: ['pending', 'processing', 'completed'], default: 'pending' },
+  createdAt: { type: Date, default: Date.now }
+});
 
 module.exports = mongoose.model('Series', seriesSchema);
