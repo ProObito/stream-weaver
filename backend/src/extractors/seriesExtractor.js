@@ -1,47 +1,50 @@
-const Series = require('../models/Series');
-const { fetchSeriesData } = require('../services/sourceApi.service');
-const { getAnilistInfo } = require('../services/metadata.service');
-const { processEpisodes } = require('./videoExtractor');
+const axios = require('axios');
+const cheerio = require('cheerio');
 
-async function extractSeries(url) {
-  console.log(`\n🎬 Starting Extraction: ${url}`);
-  
-  try {
-    // 1. Fetch Source Data (ZenRows)
-    const sourceData = await fetchSeriesData(url);
-    if (!sourceData || !sourceData.title) throw new Error('Source data failed');
+async function extractAndUpload(url, animeName) {
+    try {
+        console.log(`🎬 Extracting: ${animeName} from ${url}`);
+        
+        // ZenRows se page fetch karna (Cloudflare bypass karne ke liye)
+        const response = await axios.get(`https://api.zenrows.com/v1/?key=${process.env.ZENROWS_API_KEY}&url=${encodeURIComponent(url)}&block_resources=image,stylesheet,font&wait_for=.post-content`);
+        const $ = cheerio.load(response.data);
 
-    // 2. Fetch Metadata (AniList)
-    const aniInfo = await getAnilistInfo(sourceData.title);
+        const episodes = [];
 
-    // 3. Save/Update Series
-    const series = await Series.findOneAndUpdate(
-      { sourceUrl: url },
-      {
-        title: sourceData.title,
-        cover: aniInfo?.cover || sourceData.cover,
-        banner: aniInfo?.banner || '',
-        description: aniInfo?.description || sourceData.description,
-        genres: aniInfo?.genres || sourceData.genres,
-        year: aniInfo?.year || sourceData.year,
-        status: 'extracting',
-        lastExtracted: new Date()
-      },
-      { upsert: true, new: true }
-    );
+        // Desidubanime ke specific selectors (Modify if site changes)
+        // Ye logic 1080p ya 720p ke direct links dhoondega
+        $('.post-content a').each((i, el) => {
+            const linkText = $(el).text().toLowerCase();
+            const linkUrl = $(el).attr('href');
 
-    // 4. Start Remote Upload Process
-    const queuedCount = await processEpisodes(series, sourceData.episodes);
-    
-    series.status = 'completed';
-    await series.save();
+            // Sirf Direct Download ya Hdrive wale links uthana jo remote upload support karein
+            if (linkUrl && (linkText.includes('1080p') || linkText.includes('720p') || linkText.includes('direct'))) {
+                episodes.push({
+                    title: `${animeName} - Episode ${i + 1}`,
+                    sourceUrl: linkUrl
+                });
+            }
+        });
 
-    return { success: true, queued: queuedCount };
-  } catch (error) {
-    console.error(`❌ Series Extraction Error:`, error.message);
-    await Series.findOneAndUpdate({ sourceUrl: url }, { status: 'failed' });
-    return { success: false, error: error.message };
-  }
+        console.log(`📦 Found ${episodes.length} episodes for ${animeName}`);
+
+        for (const ep of episodes) {
+            // Streamtape Remote Upload Trigger
+            const remoteUrl = `https://api.streamtape.com/file/remoteupload/add?login=${process.env.STREAMTAPE_LOGIN}&key=${process.env.STREAMTAPE_KEY}&url=${encodeURIComponent(ep.sourceUrl)}&name=${encodeURIComponent(ep.title)}`;
+            
+            const uploadRes = await axios.get(remoteUrl);
+            if (uploadRes.data.status === 200) {
+                console.log(`✅ Queued on Streamtape: ${ep.title}`);
+            }
+            // 2 sec gap taaki API limit hit na ho
+            await new Promise(r => setTimeout(r, 2000));
+        }
+
+        return { success: true, count: episodes.length };
+    } catch (error) {
+        console.error(`❌ Error in ${animeName}:`, error.message);
+        return { success: false, error: error.message };
+    }
 }
 
-module.exports = { extractSeries };
+module.exports = { extractAndUpload };
