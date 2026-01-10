@@ -23,13 +23,13 @@ async function crawlAllSites() {
         { 
             name: 'Lords Anime', 
             url: 'https://www.lordsanime.in/all-anime-list/', 
-            apiKey: 'YAHAN_TEESRI_KEY_DAAL', // Account 3
+            apiKey: '700c782d212580adba1fd15d82df6257ecb8701c', // Account 3
             selector: '.post-title a' 
         },
         { 
             name: 'YBX Anime', 
             url: 'https://ybxanime.com/', 
-            apiKey: 'YAHAN_CHOUTHI_KEY_DAAL', // Account 4
+            apiKey: '700c782d212580adba1fd15d82df6257ecb8701c', // Account 4
             selector: 'a' 
         }
     ];
