@@ -1,70 +1,57 @@
 const axios = require('axios');
 const cheerio = require('cheerio');
+const { extractAndUpload } = require('../extractors/seriesExtractor');
 const mongoose = require('mongoose');
 
-async function extractAndUpload(url, animeName, siteName, siteKey) {
-    try {
-        const Series = mongoose.model('Series');
-        const Episode = mongoose.model('Episode');
+async function crawlAllSites() {
+    const Series = mongoose.model('Series');
+    const sites = [
+        { name: 'DesiDub', url: 'https://www.desidubanime.me/', apiKey: '700c782d212580adba1fd15d82df6257ecb8701c', selector: 'article a' },
+        { name: 'HindiSubAnime', url: 'http://HindiSubAnime.co', apiKey: '700c782d212580adba1fd15d82df6257ecb8701c', selector: '.post-title a, article a' }
+    ];
 
-        // 1. Fetch MAL Data for enrichment
-        let malData = { poster: '', plot: '' };
+    console.log("🚀 Smart Crawler v2.0 Started...");
+
+    for (const site of sites) {
         try {
-            const malRes = await axios.get(`https://api.jikan.moe/v4/anime?q=${encodeURIComponent(animeName)}&limit=1`);
-            if (malRes.data.data[0]) {
-                malData.poster = malRes.data.data[0].images.jpg.large_image_url;
-                malData.plot = malRes.data.data[0].synopsis;
-            }
-        } catch (e) {}
+            console.log(`📡 Scanning: ${site.name}`);
+            const res = await axios.get('https://api.zenrows.com/v1/', {
+                params: { 'url': site.url, 'apikey': site.apiKey.trim(), 'js_render': 'false' }
+            });
 
-        // 2. Scrape the actual page
-        const response = await axios.get('https://api.zenrows.com/v1/', {
-            params: { 'url': url, 'apikey': siteKey.trim(), 'premium_proxy': 'false' }
-        });
-        const $ = cheerio.load(response.data);
-        
-        let lang = (siteName === "DesiDub") ? "Hindi Dubbed" : "Hindi Subbed";
-        if (animeName.toLowerCase().includes("dubbed")) lang = "Hindi Dubbed";
+            const $ = cheerio.load(res.data);
+            const links = [];
 
-        // 3. Save to DB with Poster and Plot
-        let series = await Series.findOneAndUpdate(
-            { title: animeName },
-            { 
-                sourceSite: siteName, 
-                sourceUrl: url, 
-                language: lang, 
-                poster: malData.poster, 
-                plot: malData.plot,
-                status: 'processing' 
-            },
-            { upsert: true, new: true }
-        );
-
-        const episodes = [];
-        $('a').each((i, el) => {
-            const link = $(el).attr('href');
-            const text = $(el).text().toLowerCase();
-            if (link && link.includes('http') && (text.includes('720p') || text.includes('1080p') || text.includes('direct'))) {
-                episodes.push({ title: `${animeName} - Ep ${episodes.length + 1}`, url: link });
-            }
-        });
-
-        if (episodes.length === 0) return false;
-
-        for (const ep of episodes) {
-            try {
-                const stUrl = `https://api.streamtape.com/file/remoteupload/add?login=${process.env.STREAMTAPE_LOGIN}&key=${process.env.STREAMTAPE_KEY}&url=${encodeURIComponent(ep.url)}&name=${encodeURIComponent(ep.title)} [${lang}]`;
-                const up = await axios.get(stUrl);
-                if (up.data.status === 200) {
-                    await Episode.create({ seriesId: series._id, title: ep.title, remoteId: up.data.result.id, status: 'pending' });
+            $(site.selector).each((i, el) => {
+                const link = $(el).attr('href');
+                const title = $(el).text().trim();
+                // Filter tags, categories, and short names (actors)
+                if (link && link.includes('http') && title.split(' ').length > 1 && !link.includes('/tag/') && !link.includes('/category/')) {
+                    if (!links.find(a => a.link === link)) links.push({ title, link });
                 }
-            } catch (err) {}
-            await new Promise(r => setTimeout(r, 1000));
-        }
+            });
 
-        await Series.findByIdAndUpdate(series._id, { status: 'completed' });
-        console.log(`✅ Extracted & Enriched: ${animeName}`);
-        return true;
-    } catch (err) { return false; }
+            console.log(`📦 Found ${links.length} potential links on ${site.name}`);
+
+            for (const item of links) {
+                if (await Series.findOne({ title: item.title })) continue;
+
+                // MAL Strict Check: Actor names usually don't have high 'members' count or 'TV' type in top result
+                try {
+                    const mal = await axios.get(`https://api.jikan.moe/v4/anime?q=${encodeURIComponent(item.title)}&limit=1`);
+                    const result = mal.data.data[0];
+                    
+                    if (!result || result.score < 1 || result.members < 100) {
+                        console.log(`⏩ Skipping junk/actor: ${item.title}`);
+                        continue;
+                    }
+                } catch (e) { console.log("MAL Limit - Continuing anyway"); }
+
+                console.log(`🔥 Starting Extraction: ${item.title}`);
+                await extractAndUpload(item.link, item.title, site.name, site.apiKey);
+                await new Promise(r => setTimeout(r, 3000));
+            }
+        } catch (err) { console.log(`❌ Error: ${err.message}`); }
+    }
 }
-module.exports = { extractAndUpload };
+module.exports = { crawlAllSites };
