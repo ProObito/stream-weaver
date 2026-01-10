@@ -2,12 +2,13 @@ const axios = require('axios');
 const cheerio = require('cheerio');
 const mongoose = require('mongoose');
 
-async function extractAndUpload(url, animeName, siteName) {
+// Yahan humne 'siteKey' parameter add kar diya hai
+async function extractAndUpload(url, animeName, siteName, siteKey) {
     try {
         const Series = mongoose.model('Series');
         const Episode = mongoose.model('Episode');
 
-        // 1. MAL se Poster aur Info lena
+        // 1. MAL Info
         let animeInfo = { poster: '', plot: '' };
         try {
             const mal = await axios.get(`https://api.jikan.moe/v4/anime?q=${encodeURIComponent(animeName)}&limit=1`);
@@ -15,15 +16,14 @@ async function extractAndUpload(url, animeName, siteName) {
                 animeInfo.poster = mal.data.data[0].images.jpg.large_image_url;
                 animeInfo.plot = mal.data.data[0].synopsis;
             }
-        } catch (e) { console.log("MAL info skip."); }
+        } catch (e) { }
 
-        // 2. Page Scrape (ZenRows)
+        // 2. Scrape with Specific Site Key
         const response = await axios.get('https://api.zenrows.com/v1/', {
-            params: { 'url': url, 'apikey': process.env.ZENROWS_API_KEY, 'premium_proxy': 'true', 'mode': 'auto' }
+            params: { 'url': url, 'apikey': siteKey, 'premium_proxy': 'true', 'mode': 'auto' }
         });
         const $ = cheerio.load(response.data);
         
-        // Dub/Sub Logic
         let lang = (siteName === "DesiDub") ? "Hindi Dubbed" : "Hindi Subbed";
         if (animeName.toLowerCase().includes("dubbed")) lang = "Hindi Dubbed";
 
@@ -33,25 +33,24 @@ async function extractAndUpload(url, animeName, siteName) {
             { upsert: true, new: true }
         );
 
-        // 3. Finding Episode Links
+        // 3. Links and Upload
         const episodes = [];
         $('a').each((i, el) => {
             const link = $(el).attr('href');
             const text = $(el).text().toLowerCase();
-            if (link && link.includes('http') && (text.includes('720p') || text.includes('1080p') || text.includes('direct') || link.includes('drive.google'))) {
+            if (link && link.includes('http') && (text.includes('720p') || text.includes('1080p') || text.includes('direct'))) {
                 episodes.push({ title: `${animeName} - Ep ${episodes.length + 1}`, url: link });
             }
         });
 
-        // 4. Streamtape Remote Upload
         for (const ep of episodes) {
-            const streamtapeUrl = `https://api.streamtape.com/file/remoteupload/add?login=${process.env.STREAMTAPE_LOGIN}&key=${process.env.STREAMTAPE_KEY}&url=${encodeURIComponent(ep.url)}&name=${encodeURIComponent(ep.title)} [${lang}]`;
-            const upRes = await axios.get(streamtapeUrl);
-            if (upRes.data.status === 200) {
+            const stUrl = `https://api.streamtape.com/file/remoteupload/add?login=${process.env.STREAMTAPE_LOGIN}&key=${process.env.STREAMTAPE_KEY}&url=${encodeURIComponent(ep.url)}&name=${encodeURIComponent(ep.title)} [${lang}]`;
+            const up = await axios.get(stUrl);
+            if (up.data.status === 200) {
                 await Episode.create({
                     seriesId: series._id,
                     title: ep.title,
-                    remoteId: upRes.data.result.id,
+                    remoteId: up.data.result.id,
                     status: 'pending'
                 });
             }
