@@ -3,34 +3,56 @@ const cheerio = require('cheerio');
 const mongoose = require('mongoose');
 const { extractAndUpload } = require('../extractors/seriesExtractor');
 
-/**
- * Main Crawler Function
- * Priority: DesiDub (Multi) > HindiSubbed (Hindi Sub) > Lords/YBX (Gap Fill)
- */
 async function crawlAllSites() {
-    // Models ko function ke andar fetch kar rahe hain taaki initialization error na ho
     const Series = mongoose.model('Series');
     const Episode = mongoose.model('Episode');
     
+    // Priority List: Pehle DesiDub (Multi), Phir HindiSubbed (Sub), Phir Lords/YBX (Missing)
     const sites = [
-        { name: 'DesiDub', url: 'https://www.desidubanime.me/', selector: 'article a', lang: 'Multi', forceAll: true },
-        { name: 'HindiSubbed', url: 'http://HindiSubAnime.co', selector: '.post-title a', lang: 'Hindi Sub', forceAll: true },
-        { name: 'LordsAnime', url: 'https://www.lordsanime.in/all-anime-list/', selector: '.entry-title a', lang: 'Hindi Sub', forceAll: false },
-        { name: 'YBXAnime', url: 'https://ybxanime.com/', selector: 'a[href*="/anime/"]', lang: 'Hindi Sub', forceAll: false }
+        { 
+            name: 'DesiDub', 
+            url: 'https://www.desidubanime.me/', 
+            selector: '.post-title a, article a, h2 a', 
+            lang: 'Multi', 
+            forceAll: true 
+        },
+        { 
+            name: 'HindiSubbed', 
+            url: 'https://hindisubbed.co/', 
+            selector: '.entry-title a, .post-title a, article a', 
+            lang: 'Hindi Sub', 
+            forceAll: true 
+        },
+        { 
+            name: 'LordsAnime', 
+            url: 'https://www.lordsanime.in/all-anime-list/', 
+            selector: '.entry-title a, li a', 
+            lang: 'Hindi Sub', 
+            forceAll: false 
+        },
+        { 
+            name: 'YBXAnime', 
+            url: 'https://ybxanime.com/anime-list/', 
+            selector: 'a[href*="/anime/"]', 
+            lang: 'Hindi Sub', 
+            forceAll: false 
+        }
     ];
 
-    console.log("🚀 Starting Global Sync (Sequential Mode)...");
+    console.log("🚀 Power Sync Started: Searching for Old & New Content...");
 
     for (const site of sites) {
         try {
-            console.log(`📡 Current Site: ${site.name}`);
+            console.log(`📡 Scanning Site: ${site.name}`);
             
-            // ZenRows API to get the list of anime
+            // ZenRows with JS Render taaki dynamic titles load ho jayein
             const res = await axios.get('https://api.zenrows.com/v1/', {
                 params: { 
                     'url': site.url, 
                     'apikey': '700c782d212580adba1fd15d82df6257ecb8701c', 
-                    'premium_proxy': 'true' 
+                    'premium_proxy': 'true',
+                    'js_render': 'true',
+                    'wait_for': 'a' 
                 }
             });
 
@@ -40,30 +62,32 @@ async function crawlAllSites() {
             $(site.selector).each((i, el) => {
                 const title = $(el).text().trim();
                 const link = $(el).attr('href');
+                
                 if (link && link.includes('http') && title.length > 5) {
-                    // Duplicate links filter within the same site list
-                    if (!animeLinks.find(a => a.link === link)) {
+                    // In links ko skip karna hai (Tags, Pages, Categories)
+                    const isJunk = /category|tag|contact|about|disclaimer|dmca/.test(link.toLowerCase());
+                    if (!isJunk && !animeLinks.find(a => a.link === link)) {
                         animeLinks.push({ title, link });
                     }
                 }
             });
 
-            console.log(`✅ Found ${animeLinks.length} titles on ${site.name}`);
+            console.log(`✅ ${site.name}: Found ${animeLinks.length} Anime Titles`);
 
-            // One-by-one Series Loop
+            // --- ONE-BY-ONE SERIES PROCESSING ---
             for (const item of animeLinks) {
-                // Find or create the Series entry
+                // Same Anime Name = Same Series in DB
                 let series = await Series.findOne({ title: { $regex: new RegExp(`^${item.title}$`, 'i') } });
                 
                 let skipCount = 0;
-                // Lords aur YBX ke liye check karo kitne episodes hamare paas aa chuke hain
+                // Agar DesiDub aur HindiSubbed nahi hai, toh count check karo bache hue episodes ke liye
                 if (!site.forceAll && series) {
                     skipCount = await Episode.countDocuments({ seriesId: series._id });
                 }
 
-                console.log(`🎬 Processing: ${item.title} (Skip: ${skipCount})`);
+                console.log(`🎬 Extracting: ${item.title} from ${site.name}`);
                 
-                // One-by-one Episode extraction and upload
+                // One-by-one Episode Upload (wait for each episode to finish)
                 await extractAndUpload(
                     item.link, 
                     item.title, 
@@ -73,17 +97,17 @@ async function crawlAllSites() {
                     site.lang
                 );
                 
-                // 3 second break between different animes
+                // Gap between Series to avoid IP Ban
                 await new Promise(r => setTimeout(r, 3000));
             }
 
-            console.log(`🏁 Completed Site: ${site.name}`);
+            console.log(`🏁 Finished scanning ${site.name}. Moving to next site...`);
 
         } catch (err) {
-            console.error(`❌ Error scanning site ${site.name}:`, err.message);
+            console.error(`❌ Error on site ${site.name}:`, err.message);
         }
     }
+    console.log("🏆 Full Sync Cycle Complete!");
 }
 
-// YEH LINE SABSE IMPORTANT HAI
 module.exports = { crawlAllSites };
