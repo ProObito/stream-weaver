@@ -2,61 +2,34 @@ const axios = require('axios');
 const cheerio = require('cheerio');
 const { extractAndUpload } = require('../extractors/seriesExtractor');
 
-async function crawlSite(startPage = 1, endPage = 5) {
-  console.log(`🕷️ Spider Started! Crawling pages ${startPage} to ${endPage}...`);
+async function crawlAllSites() {
+    const sites = [
+        { name: 'DesiDub', url: 'https://www.desidubanime.me/', skipCheck: true, selector: 'article a' },
+        { name: 'TPX Sub', url: 'https://www.tpxsub.com/', skipCheck: false, selector: 'a' },
+        { name: 'Lords Anime', url: 'https://www.lordsanime.in/all-anime-list/', skipCheck: false, selector: '.post-title a' },
+        { name: 'YBX Anime', url: 'https://ybxanime.com/', skipCheck: false, selector: 'a' }
+    ];
 
-  for (let i = startPage; i <= endPage; i++) {
-    try {
-      console.log(`📄 Scanning Page ${i}...`);
-      
-      // 1. Page Load karo (ZenRows use karke taaki block na ho)
-      const targetUrl = `https://www.desidubanime.me/page/${i}/`; 
-      // Note: Site ka page structure change ho sakta hai, standard /page/i hota hai
-      
-      const response = await axios.get(`https://api.zenrows.com/v1/?key=${process.env.ZENROWS_API_KEY}&url=${encodeURIComponent(targetUrl)}`);
-      const $ = cheerio.load(response.data);
+    for (const site of sites) {
+        try {
+            const res = await axios.get('https://api.zenrows.com/v1/', {
+                params: { 'url': site.url, 'apikey': process.env.ZENROWS_API_KEY, 'premium_proxy': 'true' }
+            });
+            const $ = cheerio.load(res.data);
+            const links = [];
 
-      const animeLinks = [];
+            $(site.selector).each((i, el) => {
+                const link = $(el).attr('href');
+                const title = $(el).text().trim();
+                if (link && link.includes('http') && title.length > 5) links.push({ title, link });
+            });
 
-      // 2. Links Dhoondo (Selector site ke hisaab se adjust karna pad sakta hai)
-      // Usually 'article' tag ya '.post' class hoti hai
-      $('article a').each((index, element) => {
-        const link = $(element).attr('href');
-        const title = $(element).text().trim();
-
-        // Sirf anime wale links uthao, faltu pages nahi
-        if (link && link.includes('hindi') && !link.includes('/page/')) {
-            // Duplicate check
-            const alreadyAdded = animeLinks.find(a => a.url === link);
-            if (!alreadyAdded) {
-                animeLinks.push({ name: title || "Unknown Anime", url: link });
+            for (const item of links) {
+                await extractAndUpload(item.link, item.title, site.name);
+                await new Promise(r => setTimeout(r, 5000));
             }
-        }
-      });
-
-      console.log(`found ${animeLinks.length} anime on Page ${i}`);
-
-      // 3. Har Anime ko Process Karo
-      for (const anime of animeLinks) {
-        console.log(`🚀 Sending to Extractor: ${anime.name}`);
-        
-        // Yeh wahi function hai jo humne kal raat banaya tha (MAL + Upload wala)
-        await extractAndUpload(anime.url, anime.name);
-        
-        // 5 second ka break (Safety first!)
-        await new Promise(r => setTimeout(r, 5000));
-      }
-
-    } catch (error) {
-      console.error(`❌ Error on Page ${i}:`, error.message);
+        } catch (err) { console.log(`${site.name} Error: ${err.message}`); }
     }
-    
-    // Page change hone se pehle lamba break
-    console.log("💤 Resting before next page...");
-    await new Promise(r => setTimeout(r, 10000));
-  }
-  
-  console.log("✅ Crawling Job Finished!");
 }
 
-module.exports = { crawlSite };
+module.exports = { crawlAllSites };
