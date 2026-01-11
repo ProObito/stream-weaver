@@ -5,8 +5,8 @@ const seriesSchema = new mongoose.Schema({
     poster: { type: String, default: "" },
     description: { type: String, default: "" },
     sourceUrl: { type: String, default: "" },
-    isPublished: { type: Boolean, default: false }, // Yeh zaroori hai
+    isPublished: { type: Boolean, default: false },
     lastUpdated: { type: Date, default: Date.now }
-});
+}, { timestamps: true });
 
-module.exports = mongoose.model('Series', seriesSchema);
+module.exports = mongoose.models.Series || mongoose.model('Series', seriesSchema);
