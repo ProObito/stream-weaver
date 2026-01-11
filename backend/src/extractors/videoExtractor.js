@@ -3,60 +3,48 @@ const { addRemoteUpload } = require('../services/streamtape.service');
 
 async function processEpisodes(series, episodeList) {
   console.log(`🚀 Queueing ${episodeList.length} episodes for: ${series.title}`);
-  let queuedCount = 0;
-
+  
   for (const epData of episodeList) {
     try {
-      // 1. Check if episode already exists for this series
+      // 1. Pehle se hai toh skip
       let episode = await Episode.findOne({ 
         seriesId: series._id, 
-        episodeNumber: epData.episode 
+        episodeNumber: epData.episode,
+        seasonNumber: epData.season || 1 
       });
 
-      // Status check: Agar pehle se upload ho raha hai ya ho chuka hai, skip karo
-      if (episode && (episode.status === 'ready' || episode.status === 'processing')) {
-        continue;
-      }
+      if (episode && (episode.status === 'ready' || episode.status === 'processing')) continue;
 
-      // 2. Naya episode entry banao agar nahi hai
+      // 2. Draft Episode entry banao (remoteId ke bina)
       if (!episode) {
         episode = await Episode.create({
           seriesId: series._id,
           title: epData.title || `Episode ${epData.episode}`,
           episodeNumber: epData.episode,
+          seasonNumber: epData.season || 1,
           status: 'pending'
+          // remoteId yahan required nahi hai ab
         });
       }
 
-      // 3. Source link check
-      const sourceLink = epData.streams?.[0]?.link || epData.link; // Dono formats support karega
-      if (!sourceLink) {
-        await episode.updateOne({ status: 'failed', errorReason: 'No source link found' });
-        continue;
-      }
-
-      // 4. Remote Upload trigger (Streamtape API)
-      const remoteId = await addRemoteUpload(sourceLink);
+      // 3. Streamtape pe bhejo
+      const remoteId = await addRemoteUpload(epData.link);
 
       if (remoteId) {
-        await episode.updateOne({
+        await Episode.findByIdAndUpdate(episode._id, {
           status: 'processing',
-          remoteId: remoteId,
-          progress: 0,
-          errorReason: null
+          remoteId: remoteId
         });
-        queuedCount++;
-        console.log(`✅ Ep ${epData.episode} queued to Streamtape.`);
       } else {
-        await episode.updateOne({ status: 'failed', errorReason: 'Streamtape API Failed' });
+        await Episode.findByIdAndUpdate(episode._id, { 
+          status: 'failed', 
+          errorReason: 'Streamtape API did not return ID' 
+        });
       }
-
     } catch (error) {
       console.error(`❌ Error in Ep ${epData.episode}:`, error.message);
     }
   }
-  
-  return queuedCount;
 }
 
 module.exports = { processEpisodes };
