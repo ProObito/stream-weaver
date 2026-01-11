@@ -13,15 +13,16 @@ const extractAndUpload = async (mainUrl, animeName, siteName, siteKey, languageT
         const mainRes = await axios.get(scraperUrl);
         const $main = cheerio.load(mainRes.data);
 
-        // Fetch MAL Info
         let poster = "", description = "";
         try {
             const mal = await axios.get(`https://api.jikan.moe/v4/anime?q=${encodeURIComponent(animeName)}&limit=1`);
-            if (mal.data.data.length > 0) {
+            if (mal.data.data && mal.data.data.length > 0) {
                 poster = mal.data.data[0].images.jpg.large_image_url;
                 description = mal.data.data[0].synopsis;
             }
-        } catch (e) { console.log("MAL Skip"); }
+        } catch (e) { 
+            console.log("MAL Skip"); 
+        }
 
         const series = await Series.findOneAndUpdate(
             { title: { $regex: new RegExp(`^${animeName}$`, 'i') } },
@@ -50,7 +51,9 @@ const extractAndUpload = async (mainUrl, animeName, siteName, siteKey, languageT
                 let vLink = "";
                 $ep('a').each((j, el) => {
                     const l = $ep(el).attr('href');
-                    if (l && /pixeldrain|drive|stream|sharer/i.test(l)) vLink = l;
+                    if (l && /pixeldrain|drive|stream|sharer/i.test(l)) {
+                        vLink = l;
+                    }
                 });
 
                 if (vLink) {
@@ -63,7 +66,7 @@ const extractAndUpload = async (mainUrl, animeName, siteName, siteKey, languageT
                         }
                     });
 
-                    if (up.data.status === 200) {
+                    if (up.data && up.data.status === 200) {
                         await Episode.findOneAndUpdate(
                             { seriesId: series._id, episodeNumber: epNum },
                             { title: `Episode ${epNum}`, remoteId: up.data.result.id, language: languageTag },
@@ -72,9 +75,13 @@ const extractAndUpload = async (mainUrl, animeName, siteName, siteKey, languageT
                         console.log(`✅ Ep ${epNum} Done`);
                     }
                 }
-            } catch (err) { console.log(`Error in Loop: ${err.message}`); }
+            } catch (err) { 
+                console.log(`Error in Loop: ${err.message}`); 
+            }
         }
-    } catch (err) { console.error(`Global Error: ${err.message}`); }
+    } catch (err) { 
+        console.error(`Global Error: ${err.message}`); 
+    }
 };
 
 module.exports = { extractAndUpload };
