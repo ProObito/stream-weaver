@@ -2,24 +2,26 @@ const express = require('express');
 const router = express.Router();
 const mongoose = require('mongoose');
 const { extractAndUpload } = require('../extractors/seriesExtractor');
+const { startGlobalCrawl } = require('../services/crawler.service');
 
-// 1. DASHBOARD SUMMARY: Stats dikhane ke liye
+// 1. DASHBOARD STATS: Live aur Pending count ke liye
 router.get('/summary', async (req, res) => {
     try {
         const Series = mongoose.model('Series');
         const total = await Series.countDocuments({ isPublished: true });
-        // Pending count client-side list.length se bhi nikal raha hai, par yahan 0 bhej sakte hain
-        res.json({ total });
+        // Pending count hum yahan se bhi bhej sakte hain
+        const pending = await Series.countDocuments({ isPublished: false });
+        res.json({ total, pending });
     } catch (err) {
-        res.status(500).json({ total: 0 });
+        res.status(500).json({ total: 0, pending: 0 });
     }
 });
 
-// 2. GET PENDING: Drafts ki list load karne ke liye
+// 2. GET PENDING LIST: Review ke liye drafts load karna
 router.get('/pending', async (req, res) => {
     try {
         const Series = mongoose.model('Series');
-        // Sirf wahi anime jo abhi live nahi huye (Drafts)
+        // Drafts ko latest updated ke hisab se dikhayega
         const drafts = await Series.find({ isPublished: false }).sort({ updatedAt: -1 });
         res.json(drafts);
     } catch (err) {
@@ -27,22 +29,32 @@ router.get('/pending', async (req, res) => {
     }
 });
 
-// 3. MANUAL EXTRACT: Naya anime backend mein save karne ke liye
+// 3. GLOBAL AUTO-EXTRACT: Ek click mein teeno sites scan karega
+router.post('/start-extract', async (req, res) => {
+    try {
+        // Ye background mein crawler service ko trigger karega
+        startGlobalCrawl(); 
+        res.json({ message: "Global Crawler Started! TPX, DesiDub, aur HiAnime scan ho rahe hain. Drafts check karte rahein." });
+    } catch (err) {
+        res.status(500).json({ message: "Crawler trigger failed!" });
+    }
+});
+
+// 4. MANUAL EXTRACT: Agar kisi specific anime ka link dalna ho
 router.post('/manual-extract', async (req, res) => {
     const { url, animeName, language } = req.body;
     
     if (!url || !animeName) {
-        return res.status(400).json({ message: "Bhai, details adhuri hain!" });
+        return res.status(400).json({ message: "URL aur Name dono zaroori hain!" });
     }
 
-    // Background process: Database mein save aur episodes upload
-    // Humne extractor mein isPublished: false rakha hai taaki ye seedha pending mein jaye
+    // Background extraction start (Default Language handles tags)
     extractAndUpload(url, animeName, language || 'Hindi Sub');
     
-    res.json({ message: "Extraction process started! 🚀 Thoda wait karke refresh karein." });
+    res.json({ message: `Extraction started for ${animeName}! Draft list refresh karein.` });
 });
 
-// 4. PUBLISH TO LIVE: Draft ko frontend par bhejne ke liye
+// 5. UPLOAD TO FRONTEND (Publish): Draft ko live karna
 router.post('/publish/:id', async (req, res) => {
     try {
         const Series = mongoose.model('Series');
@@ -53,12 +65,23 @@ router.post('/publish/:id', async (req, res) => {
         );
         
         if (updated) {
-            res.json({ success: true, message: "Series is now live!" });
+            res.json({ success: true, message: "🚀 Anime ab Live hai frontend par!" });
         } else {
-            res.status(404).json({ success: false, message: "Anime not found" });
+            res.status(404).json({ success: false, message: "Series nahi mili!" });
         }
     } catch (err) {
-        res.status(500).json({ success: false, message: "Server Error" });
+        res.status(500).json({ success: false, message: "Publishing error" });
+    }
+});
+
+// 6. DELETE DRAFT: Agar koi galat entry aa jaye toh
+router.delete('/delete/:id', async (req, res) => {
+    try {
+        const Series = mongoose.model('Series');
+        await Series.findByIdAndDelete(req.params.id);
+        res.json({ success: true, message: "Draft deleted successfully" });
+    } catch (err) {
+        res.status(500).json({ success: false, message: "Delete failed" });
     }
 });
 
