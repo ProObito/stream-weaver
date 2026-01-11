@@ -1,13 +1,34 @@
 const mongoose = require('mongoose');
 
-const seriesSchema = new mongoose.Schema({
-    title: { type: String, required: true, unique: true },
-    poster: { type: String, default: "" },
-    description: { type: String, default: "" },
-    sourceUrl: { type: String, default: "" },
-    isPublished: { type: Boolean, default: false },
-    lastUpdated: { type: Date, default: Date.now }
+const episodeSchema = new mongoose.Schema({
+    seriesId: { 
+        type: mongoose.Schema.Types.ObjectId, 
+        ref: 'Series', 
+        required: true 
+    },
+    title: { 
+        type: String, 
+        required: true 
+    },
+    episodeNumber: { 
+        type: Number, 
+        required: true 
+    },
+    remoteId: { 
+        type: String, 
+        required: true 
+    }, // Streamtape ya Doodstream ki ID
+    language: { 
+        type: String, 
+        default: 'Hindi Sub' 
+    },
+    quality: { 
+        type: String, 
+        default: '720p' 
+    }
 }, { timestamps: true });
 
-// Agar model pehle se compile hai toh wahi use karega
-module.exports = mongoose.models.Series || mongoose.model('Series', seriesSchema);
+// Indexing taaki search fast ho aur duplicate episode na bane
+episodeSchema.index({ seriesId: 1, episodeNumber: 1, language: 1 }, { unique: true });
+
+module.exports = mongoose.models.Episode || mongoose.model('Episode', episodeSchema);
