@@ -6,22 +6,29 @@ const { extractAndUpload } = require('../extractors/seriesExtractor');
 async function crawlAllSites() {
     const Series = mongoose.model('Series');
     const Episode = mongoose.model('Episode');
-    const API_KEY = '201c680bb6922b8860eeb532fa93efe21c195146';
+    const API_KEY = 'c3a27fd2ab87b6c7da47577e5c4a61c94d4f6ba8'; // Teri New Key
     
     const sites = [
-        { name: 'DesiDub', url: 'https://www.desidubanime.me', selector: '.entry-title a, .post-title a', lang: 'Multi', forceAll: true },
-        { name: 'HindiSubAnime', url: 'http://HindiSubAnime.co', selector: '.entry-title a, .post-title a', lang: 'Hindi Sub', forceAll: true },
-        { name: 'LordsAnime', url: 'https://www.lordsanime.in/all-anime-list/', selector: '.entry-title a', lang: 'Hindi Sub', forceAll: false },
-        { name: 'YBXAnime', url: 'https://ybxanime.com/anime-list/', selector: '.entry-title a, .anime-card-title a', lang: 'Hindi Sub', forceAll: false }
+        { 
+            name: 'HindiSubAnime', 
+            url: 'http://hindisubanime.co/anime-list/', // Direct List Page
+            selector: '.entry-title a, .post-title a', 
+            lang: 'Hindi Sub' 
+        }
     ];
 
-    console.log("🚀 Starting Clean Extraction (Anime Only)...");
+    console.log("🚀 Targeting HindiSubAnime.co - Full Archive Mode...");
 
     for (const site of sites) {
         try {
             console.log(`📡 Scanning: ${site.name}`);
             const res = await axios.get('https://api.zenrows.com/v1/', {
-                params: { 'url': site.url, 'apikey': API_KEY, 'premium_proxy': 'true', 'js_render': 'true' }
+                params: { 
+                    'url': site.url, 
+                    'apikey': API_KEY, 
+                    'premium_proxy': 'true',
+                    'js_render': 'true' 
+                }
             });
 
             const $ = cheerio.load(res.data);
@@ -31,8 +38,8 @@ async function crawlAllSites() {
                 const title = $(el).text().trim();
                 const link = $(el).attr('href');
                 
-                // Filter: Sirf wo titles jo "Watch", "Download", "Okamura" type ke words nahi hain
-                const junkWords = /watch|download|now|series|episode|click|okamura|hirata|ai|cast|voice/i;
+                // Filtering: Sirf real anime titles uthao
+                const junkWords = /watch|download|now|series|episode|okamura|hirata|ai|cast|voice|policy|dmca|contact/i;
                 if (link && link.includes('http') && title.length > 5 && !junkWords.test(title)) {
                     if (!animeLinks.find(a => a.link === link)) {
                         animeLinks.push({ title, link });
@@ -40,19 +47,28 @@ async function crawlAllSites() {
                 }
             });
 
-            console.log(`✅ ${site.name}: Found ${animeLinks.length} Real Anime`);
+            console.log(`✅ Found ${animeLinks.length} Anime Titles on HindiSubAnime`);
 
             for (const item of animeLinks) {
+                // Resume Logic: Skip if already in DB
                 let series = await Series.findOne({ title: { $regex: new RegExp(`^${item.title}$`, 'i') } });
-                if (series && !site.forceAll) {
+                if (series) {
                     const count = await Episode.countDocuments({ seriesId: series._id, language: site.lang });
-                    if (count > 0) continue;
+                    if (count > 0) {
+                        console.log(`⏩ Skipping: ${item.title} (Already Synced)`);
+                        continue;
+                    }
                 }
 
+                console.log(`🎬 Extracting Episodes: ${item.title}`);
                 await extractAndUpload(item.link, item.title, site.name, API_KEY, 0, site.lang);
-                await new Promise(r => setTimeout(r, 2000));
+                
+                // API Health Gap
+                await new Promise(r => setTimeout(r, 2500));
             }
-        } catch (err) { console.error(`❌ ${site.name} Error`); }
+        } catch (err) {
+            console.error(`❌ HindiSubAnime Error:`, err.message);
+        }
     }
 }
 
