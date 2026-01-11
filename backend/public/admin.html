@@ -3,15 +3,18 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Anime Admin Control</title>
+    <title>Stream Weaver - Master Admin</title>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap" rel="stylesheet">
     <style>
         :root {
             --bg: #0b0e14;
             --card: #151921;
             --accent: #00d2ff;
             --success: #00ff88;
+            --danger: #ff4d4d;
             --text: #ffffff;
             --secondary: #94a3b8;
+            --input: #1e293b;
         }
 
         body {
@@ -22,15 +25,23 @@
             padding: 15px;
         }
 
-        .container { max-width: 600px; margin: 0 auto; }
+        .container { max-width: 700px; margin: 0 auto; }
 
-        header { border-bottom: 2px solid #1e293b; padding-bottom: 15px; margin-bottom: 20px; }
-        
+        header { 
+            border-bottom: 2px solid #1e293b; 
+            padding-bottom: 15px; 
+            margin-bottom: 20px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        /* Stats Section */
         .stats-row {
             display: grid;
             grid-template-columns: 1fr 1fr;
             gap: 15px;
-            margin-bottom: 20px;
+            margin-bottom: 25px;
         }
 
         .stat-card {
@@ -44,129 +55,176 @@
         .stat-card h2 { font-size: 2.5rem; margin: 0; color: var(--accent); }
         .stat-card p { margin: 5px 0 0; color: var(--secondary); font-size: 0.9rem; }
 
-        /* Control Form */
-        .admin-form {
+        /* Form Section */
+        .admin-section {
             background: var(--card);
             padding: 20px;
             border-radius: 15px;
             border: 1px solid #2d3748;
-            margin-bottom: 20px;
+            margin-bottom: 25px;
         }
 
-        .admin-form h3 { margin-top: 0; color: var(--accent); font-size: 1rem; }
+        .admin-section h3 { margin-top: 0; font-size: 1.1rem; color: var(--accent); margin-bottom: 15px; }
 
         input, select {
             width: 100%;
             padding: 12px;
-            margin: 8px 0;
-            background: #1e293b;
+            margin-bottom: 12px;
+            background: var(--input);
             border: 1px solid #334155;
             border-radius: 8px;
             color: white;
             box-sizing: border-box;
+            font-size: 0.95rem;
         }
 
-        .btn-group { display: flex; gap: 10px; margin-top: 10px; }
-
         button {
-            flex: 1;
-            padding: 12px;
+            width: 100%;
+            padding: 14px;
             border: none;
             border-radius: 8px;
             font-weight: bold;
             cursor: pointer;
             transition: 0.3s;
+            text-transform: uppercase;
+            letter-spacing: 1px;
         }
 
         .btn-extract { background: var(--accent); color: #000; }
-        .btn-sync { background: var(--success); color: #000; }
-        #crawlBtn {
-            background: linear-gradient(135deg, #00d2ff 0%, #3a7bd5 100%);
-            color: white;
-            padding: 18px;
-            width: 100%;
-            margin-top: 10px;
+        .btn-extract:hover { background: #00b8e6; }
+
+        .btn-publish { 
+            background: var(--success); 
+            color: #0b0e14; 
+            padding: 8px 15px; 
+            width: auto;
+            font-size: 0.8rem;
         }
 
-        button:disabled { opacity: 0.5; cursor: not-allowed; }
+        /* Activity & Pending List */
+        .list-container {
+            background: var(--card);
+            border-radius: 15px;
+            padding: 20px;
+            border: 1px solid #2d3748;
+        }
 
-        /* Recent Activity */
-        .activity-log { background: var(--card); border-radius: 15px; padding: 15px; margin-top: 20px; }
-        .log-header { display: flex; justify-content: space-between; font-size: 0.8rem; color: var(--secondary); border-bottom: 1px solid #2d3748; padding-bottom: 10px; }
-        .log-item { display: flex; justify-content: space-between; align-items: center; padding: 12px 0; border-bottom: 1px solid #1e293b; }
-        .status-tag { font-size: 0.7rem; color: #94a3b8; border-left: 2px solid var(--accent); padding-left: 8px; }
-        .badge { font-size: 0.7rem; padding: 3px 8px; border-radius: 5px; font-weight: bold; background: rgba(0, 255, 136, 0.2); color: #00ff88; }
+        .list-title {
+            color: var(--secondary);
+            font-size: 0.8rem;
+            text-transform: uppercase;
+            margin-bottom: 15px;
+            display: block;
+            border-bottom: 1px solid #2d3748;
+            padding-bottom: 8px;
+        }
+
+        .anime-item {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 12px;
+            background: #1e293b66;
+            border-radius: 10px;
+            margin-bottom: 10px;
+            border: 1px solid transparent;
+        }
+
+        .anime-item:hover { border-color: #334155; }
+
+        .anime-info { display: flex; align-items: center; gap: 15px; }
+        .anime-info img { width: 45px; height: 65px; object-fit: cover; border-radius: 5px; background: #000; }
+        .anime-info h4 { margin: 0; font-size: 0.95rem; }
+        .anime-info small { color: var(--accent); font-size: 0.75rem; display: block; margin-top: 3px; }
+
+        .badge-draft { font-size: 0.65rem; background: rgba(255, 187, 0, 0.2); color: #ffbb00; padding: 2px 6px; border-radius: 4px; margin-left: 5px;}
+
+        #statusMsg { font-size: 0.8rem; text-align: center; margin-top: 10px; color: var(--secondary); }
     </style>
 </head>
 <body>
 
     <div class="container">
         <header>
-            <h1 style="margin:0; font-size: 1.5rem;">Admin Panel</h1>
-            <p style="color:var(--secondary); margin:5px 0;">Stream Weaver Control Center</p>
+            <div>
+                <h1 style="margin:0; font-size: 1.5rem;">Stream Weaver</h1>
+                <p style="color:var(--secondary); margin:0; font-size: 0.85rem;">Master Admin Control</p>
+            </div>
+            <div id="online-status" style="color: var(--success); font-size: 0.8rem;">● System Online</div>
         </header>
 
         <div class="stats-row">
             <div class="stat-card">
                 <h2 id="totalCount">0</h2>
-                <p>Total Series</p>
+                <p>Live Series</p>
             </div>
             <div class="stat-card">
-                <h2 id="lastHour">0</h2>
-                <p>Latest Added</p>
+                <h2 id="pendingCount">0</h2>
+                <p>Pending Drafts</p>
             </div>
         </div>
 
-        <div class="admin-form">
-            <h3>🎯 Manual Series Control</h3>
-            <input type="text" id="manualUrl" placeholder="Paste Anime Link (e.g. HindiSubAnime)">
-            <input type="text" id="manualName" placeholder="Anime Name (For DB & Search)">
+        <div class="admin-section">
+            <h3>🚀 Manual Auto-Extractor</h3>
+            <input type="text" id="manualUrl" placeholder="Paste Anime Link (HindiSubAnime/DesiDub)">
+            <input type="text" id="manualName" placeholder="Exact Anime Name (e.g. Solo Leveling)">
             <select id="manualLang">
                 <option value="Hindi Sub">Hindi Sub</option>
                 <option value="Hindi Dub">Hindi Dub</option>
+                <option value="Multi Audio">Multi Audio</option>
             </select>
-            <div class="btn-group">
-                <button class="btn-extract" id="extractBtn" onclick="triggerManualCrawl()">EXTRACT LINK</button>
-                <button class="btn-sync" onclick="syncToFrontend()">ADD INFO + IMAGE</button>
-            </div>
-            <p id="statusMsg" style="font-size: 0.8rem; margin-top: 10px; color: var(--secondary); text-align: center;">System Ready</p>
+            <button class="btn-extract" id="extractBtn" onclick="triggerManualCrawl()">Auto-Extract & Save Draft</button>
+            <p id="statusMsg">Ready for new task</p>
         </div>
 
-        <button id="crawlBtn" onclick="triggerCrawl()">🚀 RUN FULL AUTO-SCAN</button>
-
-        <div class="activity-log">
-            <div class="log-header">
-                <span>Recent Series</span>
-                <span>Language</span>
+        <div class="list-container">
+            <span class="list-title">Pending for Frontend Approval</span>
+            <div id="pendingList">
+                <p style="text-align:center; color:var(--secondary); font-size: 0.9rem;">No pending drafts found.</p>
             </div>
-            <div id="logList"></div>
         </div>
     </div>
 
     <script>
         const API = window.location.origin + '/api/admin';
 
+        // 1. Dashboard Stats aur Pending List load karna
         async function updateDashboard() {
             try {
-                const res = await fetch(`${API}/summary`);
-                const data = await res.json();
-                document.getElementById('totalCount').innerText = data.total;
+                // Summary Stats
+                const sumRes = await fetch(`${API}/summary`);
+                const sumData = await sumRes.json();
+                document.getElementById('totalCount').innerText = sumData.total;
+
+                // Pending Drafts List
+                const pendRes = await fetch(`${API}/pending`);
+                const drafts = await pendRes.json();
                 
-                const logList = document.getElementById('logList');
-                if (data.recentlyAdded.length > 0) {
-                    logList.innerHTML = data.recentlyAdded.map(item => `
-                        <div class="log-item">
-                            <div class="log-info">
-                                <h4 style="margin:0; font-size:0.9rem;">${item.title}</h4>
-                                <div class="status-tag">Ready to Stream</div>
+                document.getElementById('pendingCount').innerText = drafts.length;
+                const container = document.getElementById('pendingList');
+
+                if (drafts.length === 0) {
+                    container.innerHTML = `<p style="text-align:center; color:var(--secondary); padding: 20px;">No drafts pending. App is up to date!</p>`;
+                } else {
+                    container.innerHTML = drafts.map(item => `
+                        <div class="anime-item">
+                            <div class="anime-info">
+                                <img src="${item.poster || 'https://via.placeholder.com/45x65'}" alt="poster">
+                                <div>
+                                    <h4>${item.title} <span class="badge-draft">Draft</span></h4>
+                                    <small>Info Auto-Fetched from MAL ✅</small>
+                                </div>
                             </div>
-                            <span class="badge">${item.language || 'Sub'}</span>
+                            <button class="btn-publish" onclick="publishToLive('${item._id}')">UPLOAD TO FRONTEND</button>
                         </div>
                     `).join('');
                 }
-            } catch (err) { console.error(err); }
+            } catch (err) {
+                console.error("Dashboard Sync Error:", err);
+            }
         }
 
+        // 2. Manual Extraction Trigger
         async function triggerManualCrawl() {
             const url = document.getElementById('manualUrl').value;
             const animeName = document.getElementById('manualName').value;
@@ -174,11 +232,12 @@
             const btn = document.getElementById('extractBtn');
             const msg = document.getElementById('statusMsg');
 
-            if(!url || !animeName) return alert("Pehle URL aur Name dalo!");
+            if (!url || !animeName) return alert("Bhai, URL aur Name dono dalo!");
 
             btn.disabled = true;
-            msg.innerText = "Extracting & Uploading... Check Logs.";
-            
+            btn.innerText = "⚡ EXTRACTING...";
+            msg.innerText = "Backend is fetching video links and MAL info...";
+
             try {
                 const res = await fetch(`${API}/manual-extract`, {
                     method: 'POST',
@@ -187,31 +246,37 @@
                 });
                 const data = await res.json();
                 alert(data.message);
-            } catch (err) { alert("Backend Error!"); }
-            finally { btn.disabled = false; btn.innerText = "EXTRACT LINK"; }
+                
+                // Clear inputs
+                document.getElementById('manualUrl').value = '';
+                document.getElementById('manualName').value = '';
+            } catch (err) {
+                alert("Error: Backend connection failed!");
+            } finally {
+                btn.disabled = false;
+                btn.innerText = "Auto-Extract & Save Draft";
+                setTimeout(updateDashboard, 5000); // 5 sec baad refresh
+            }
         }
 
-        function syncToFrontend() {
-            const name = document.getElementById('manualName').value;
-            if(!name) return alert("Anime Name dalo taaki MAL se info nikal saku!");
-            alert("Auto-Syncing Cover Image and Description for: " + name);
-            // Backend handle kar raha hai extraction ke waqt hi
-        }
-
-        async function triggerCrawl() {
-            const btn = document.getElementById('crawlBtn');
-            btn.disabled = true;
-            btn.innerText = "⚡ RUNNING SCAN...";
+        // 3. Draft ko Live (Published) karna
+        async function publishToLive(id) {
+            if(!confirm("Kya aap is anime ko frontend par live karna chahte hain?")) return;
+            
             try {
-                await fetch(`${API}/start-mega-crawl`, { method: 'POST' });
-                setTimeout(() => { 
-                    btn.disabled = false; 
-                    btn.innerText = "🚀 RUN FULL AUTO-SCAN"; 
-                }, 5000);
-            } catch (err) { btn.disabled = false; }
+                const res = await fetch(`${API}/publish/${id}`, { method: 'POST' });
+                const data = await res.json();
+                if(data.success) {
+                    alert("🚀 SUCCESS: Anime is now live on Frontend!");
+                    updateDashboard();
+                }
+            } catch (err) {
+                alert("Publish failed!");
+            }
         }
 
-        setInterval(updateDashboard, 5000);
+        // Auto Refresh System
+        setInterval(updateDashboard, 10000); // Har 10 second mein stats/list refresh
         updateDashboard();
     </script>
 </body>
