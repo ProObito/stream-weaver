@@ -7,37 +7,47 @@ const extractAndUpload = async (url, animeName, siteName, siteKey, languageTag) 
         const Episode = mongoose.model('Episode');
         const Series = mongoose.model('Series');
 
-        // Added retry_404 here too
-        const targetUrl = `https://api.scraperapi.com/?api_key=${siteKey}&url=${encodeURIComponent(url)}&render=true&retry_404=true`;
+        console.log(`🎯 Mission Start: Extracting ${animeName} from ${url}`);
+
+        // ScraperAPI High-Level Settings
+        const targetUrl = `https://api.scraperapi.com/?api_key=${siteKey}&url=${encodeURIComponent(url)}&render=true&premium=true&wait_until=networkidle2`;
         
-        const response = await axios.get(targetUrl, { timeout: 60000 });
+        const response = await axios.get(targetUrl, { timeout: 120000 });
         const $ = cheerio.load(response.data);
         let linkData = [];
 
+        // Quality aur Video host dhundna
         $('a').each((i, el) => {
             const link = $(el).attr('href');
             const text = $(el).text().toLowerCase();
-            // Expanded search for more video hosts
-            if (link && /pixeldrain|gdrive|drive|stream|720p|1080p|4k|download|dood|mixdrop/i.test(link + text)) {
+            if (link && /pixeldrain|drive|stream|1080p|720p|4k|download/i.test(link + text)) {
                 let weight = link.includes('4k') ? 4000 : link.includes('1080') ? 1080 : 720;
                 linkData.push({ link, weight });
             }
         });
 
-        if (linkData.length === 0) return;
-        linkData.sort((a, b) => b.weight - a.weight);
+        if (linkData.length === 0) {
+            console.log(`❌ Link nahi mila: ${animeName}`);
+            return;
+        }
 
+        linkData.sort((a, b) => b.weight - a.weight);
+        const bestLink = linkData[0].link;
+
+        // DB Update
         let series = await Series.findOneAndUpdate(
-            { title: animeName },
+            { title: { $regex: new RegExp(`^${animeName}$`, 'i') } },
             { $set: { lastUpdated: new Date() } },
             { upsert: true, new: true }
         );
 
+        // Streamtape Upload
+        console.log(`☁️ Uploading to Streamtape...`);
         const up = await axios.get('https://api.streamtape.com/file/remoteupload/add', {
             params: {
                 login: process.env.STREAMTAPE_LOGIN,
                 key: process.env.STREAMTAPE_KEY,
-                url: linkData[0].link,
+                url: bestLink,
                 name: `${animeName} [${languageTag}]`
             }
         });
@@ -47,14 +57,13 @@ const extractAndUpload = async (url, animeName, siteName, siteKey, languageTag) 
                 seriesId: series._id,
                 title: `${animeName}`,
                 remoteId: up.data.result.id,
-                episodeNumber: 1,
                 language: languageTag,
                 status: 'ready'
             });
-            console.log(`✨ Success: ${animeName}`);
+            console.log(`✨ Success: ${animeName} is live!`);
         }
     } catch (err) {
-        console.log(`❌ Fail: ${animeName}`);
+        console.error(`❌ Extraction Failed: ${err.message}`);
     }
 };
 
