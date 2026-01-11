@@ -2,83 +2,95 @@ const axios = require('axios');
 const cheerio = require('cheerio');
 const mongoose = require('mongoose');
 
-const extractAndUpload = async (url, animeName, siteName, siteKey, languageTag) => {
+const extractAndUpload = async (mainUrl, animeName, siteName, siteKey, languageTag) => {
     try {
         const Episode = mongoose.model('Episode');
         const Series = mongoose.model('Series');
 
-        const targetUrl = `https://api.scraperapi.com/?api_key=${siteKey}&url=${encodeURIComponent(url)}&render=true&premium=true&wait_until=networkidle2`;
-        const response = await axios.get(targetUrl, { timeout: 120000 });
-        const $ = cheerio.load(response.data);
+        console.log(`🚀 Deep Scan Started for: ${animeName}`);
 
-        // Name Cleanup
-        let finalTitle = animeName;
-        if (animeName.toLowerCase().includes("watch series") || animeName.length < 3) {
-            finalTitle = $('h1').first().text().replace(/Watch|Series|Hindi|Sub|Dub|Anime/gi, '').trim();
-        }
+        // 1. Pehle Main Page fetch karo saare episodes ki list nikalne ke liye
+        const scraperUrl = `https://api.scraperapi.com/?api_key=${siteKey}&url=${encodeURIComponent(mainUrl)}&render=true`;
+        const mainRes = await axios.get(scraperUrl);
+        const $main = cheerio.load(mainRes.data);
 
-        console.log(`🎯 Target: ${finalTitle}`);
-
-        // MAL se Info aur Image nikalna (Jikan API - Free)
-        let coverImage = "";
-        let description = "No description available.";
+        // 2. Anime Info (Poster/Desc) from MAL
+        let poster = "", description = "";
         try {
-            const malRes = await axios.get(`https://api.jikan.moe/v4/anime?q=${encodeURIComponent(finalTitle)}&limit=1`);
-            if (malRes.data.data.length > 0) {
-                coverImage = malRes.data.data[0].images.jpg.large_image_url;
-                description = malRes.data.data[0].synopsis;
-            }
-        } catch (e) { console.log("MAL Info Fetch Failed"); }
+            const mal = await axios.get(`https://api.jikan.moe/v4/anime?q=${encodeURIComponent(animeName)}&limit=1`);
+            poster = mal.data.data[0].images.jpg.large_image_url;
+            description = mal.data.data[0].synopsis;
+        } catch (e) { console.log("MAL fetch failed"); }
 
-        let linkData = [];
-        $('a').each((i, el) => {
-            const link = $(el).attr('href');
-            const text = $(el).text().toLowerCase();
-            if (link && /pixeldrain|drive|stream|1080p|720p|4k|download|sharer/i.test(link + text)) {
-                linkData.push({ link, weight: link.includes('1080') ? 1080 : 720 });
-            }
-        });
-
-        if (linkData.length === 0) return console.log(`❌ No links for ${finalTitle}`);
-
-        linkData.sort((a, b) => b.weight - a.weight);
-
-        // DB Update (Status hata diya hai taaki validation error na aaye)
-        let series = await Series.findOneAndUpdate(
-            { title: { $regex: new RegExp(`^${finalTitle}$`, 'i') } },
-            { 
-                $set: { 
-                    sourceUrl: url,
-                    poster: coverImage,
-                    description: description,
-                    lastUpdated: new Date()
-                } 
-            },
-            { upsert: true, new: true, runValidators: false } // runValidators false kar diya
+        // 3. Series Entry in DB
+        const series = await Series.findOneAndUpdate(
+            { title: animeName },
+            { poster, description, sourceUrl: mainUrl, isPublished: false },
+            { upsert: true, new: true }
         );
 
-        console.log(`☁️ Uploading to Streamtape...`);
-        const up = await axios.get('https://api.streamtape.com/file/remoteupload/add', {
-            params: {
-                login: process.env.STREAMTAPE_LOGIN,
-                key: process.env.STREAMTAPE_KEY,
-                url: linkData[0].link,
-                name: `${finalTitle} [${languageTag}]`
+        // 4. Saare Episode Links dhundna (Common for HindiSubAnime)
+        let episodeLinks = [];
+        $main('a').each((i, el) => {
+            const href = $main(el).attr('href');
+            const text = $main(el).text().toLowerCase();
+            // Agar link mein 'episode' word hai ya text mein number hai
+            if (href && (href.includes('/episodio/') || href.includes('/episode/'))) {
+                episodeLinks.push({ url: href, num: i + 1 });
             }
         });
 
-        if (up.data && up.data.status === 200) {
-            await Episode.create({
-                seriesId: series._id,
-                title: `${finalTitle} - Main`,
-                remoteId: up.data.result.id,
-                language: languageTag
-            });
-            console.log(`✨ DONE: ${finalTitle} is now LIVE with info/image!`);
+        // Duplicate links saaf karna
+        episodeLinks = [...new Map(episodeLinks.map(item => [item.url, item])).values()];
+
+        console.log(`📦 Found ${episodeLinks.length} episodes. Starting extraction...`);
+
+        // 5. LOOP: Har episode ko extract karke upload karna
+        for (const ep of episodeLinks) {
+            try {
+                console.log(`⏳ Processing Episode ${ep.num}...`);
+                const epScrapeUrl = `https://api.scraperapi.com/?api_key=${siteKey}&url=${encodeURIComponent(ep.url)}&render=true`;
+                const epRes = await axios.get(epScrapeUrl);
+                const $ep = cheerio.load(epRes.data);
+
+                let videoLink = "";
+                $ep('a').each((j, el) => {
+                    const link = $ep(el).attr('href');
+                    if (link && /pixeldrain|drive|stream/i.test(link)) {
+                        videoLink = link;
+                    }
+                });
+
+                if (videoLink) {
+                    // Streamtape Upload
+                    const up = await axios.get('https://api.streamtape.com/file/remoteupload/add', {
+                        params: {
+                            login: process.env.STREAMTAPE_LOGIN,
+                            key: process.env.STREAMTAPE_KEY,
+                            url: videoLink,
+                            name: `${animeName} - Ep ${ep.num}`
+                        }
+                    });
+
+                    if (up.data.status === 200) {
+                        await Episode.create({
+                            seriesId: series._id,
+                            title: `Episode ${ep.num}`,
+                            remoteId: up.data.result.id,
+                            episodeNumber: ep.num,
+                            language: languageTag
+                        });
+                        console.log(`✅ Ep ${ep.num} Done!`);
+                    }
+                }
+            } catch (err) {
+                console.log(`❌ Error in Ep ${ep.num}: ${err.message}`);
+            }
         }
+        console.log(`✨ ALL DONE! ${animeName} is ready for approval.`);
 
     } catch (err) {
-        console.error(`❌ Fail: ${err.message}`);
+        console.error(`❌ Global Error: ${err.message}`);
     }
 };
 
