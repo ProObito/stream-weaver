@@ -1,58 +1,364 @@
-<div class="container">
-    <h2>Anime Control Panel</h2>
-    
-    <div class="card">
-        <h3>Step 1: Scrape & Save to Backend</h3>
-        <input type="text" id="animeUrl" placeholder="Paste Site URL (TPX/HiAnime)">
-        <input type="text" id="animeName" placeholder="Anime Name (e.g. Solo Leveling)">
-        <button onclick="startExtraction()">Start Extraction</button>
-    </div>
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Stream Weaver - Master Admin</title>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --bg: #0b0e14;
+            --card: #151921;
+            --accent: #00d2ff;
+            --success: #00ff88;
+            --danger: #ff4d4d;
+            --text: #ffffff;
+            --secondary: #94a3b8;
+            --input: #1e293b;
+            --purple: #6366f1;
+        }
 
-    <div class="card">
-        <h3>Step 2: Review Drafts & Upload to Frontend</h3>
-        <div id="draftList">
-            <p>Loading drafts...</p>
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: var(--bg);
+            color: var(--text);
+            margin: 0;
+            padding: 15px;
+            line-height: 1.5;
+        }
+
+        .container { max-width: 800px; margin: 0 auto; }
+
+        header { 
+            border-bottom: 2px solid #1e293b; 
+            padding-bottom: 15px; 
+            margin-bottom: 25px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        /* Stats Row */
+        .stats-row {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+            gap: 15px;
+            margin-bottom: 30px;
+        }
+
+        .stat-card {
+            background: var(--card);
+            padding: 20px;
+            border-radius: 15px;
+            text-align: center;
+            border: 1px solid #2d3748;
+            transition: transform 0.2s;
+        }
+
+        .stat-card:hover { transform: translateY(-5px); }
+        .stat-card h2 { font-size: 2.5rem; margin: 0; color: var(--accent); }
+        .stat-card p { margin: 5px 0 0; color: var(--secondary); font-size: 0.85rem; text-transform: uppercase; }
+
+        /* Sections */
+        .admin-section {
+            background: var(--card);
+            padding: 25px;
+            border-radius: 15px;
+            border: 1px solid #2d3748;
+            margin-bottom: 25px;
+        }
+
+        .admin-section h3 { margin-top: 0; font-size: 1.2rem; color: var(--accent); margin-bottom: 15px; display: flex; align-items: center; gap: 10px; }
+
+        .input-group { margin-bottom: 15px; }
+
+        input, select {
+            width: 100%;
+            padding: 14px;
+            margin-bottom: 12px;
+            background: var(--input);
+            border: 1px solid #334155;
+            border-radius: 10px;
+            color: white;
+            box-sizing: border-box;
+            font-size: 0.95rem;
+            outline: none;
+        }
+
+        input:focus { border-color: var(--accent); }
+
+        button {
+            width: 100%;
+            padding: 15px;
+            border: none;
+            border-radius: 10px;
+            font-weight: 700;
+            cursor: pointer;
+            transition: 0.3s;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 10px;
+        }
+
+        .btn-global { background: var(--purple); color: white; margin-bottom: 10px; }
+        .btn-global:hover { background: #4f46e5; }
+        .btn-global:disabled { opacity: 0.6; cursor: not-allowed; }
+
+        .btn-extract { background: var(--accent); color: #000; }
+        .btn-extract:hover { background: #00b8e6; }
+
+        /* Pending List */
+        .list-container {
+            background: var(--card);
+            border-radius: 15px;
+            padding: 25px;
+            border: 1px solid #2d3748;
+        }
+
+        .list-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 20px;
+            border-bottom: 1px solid #2d3748;
+            padding-bottom: 10px;
+        }
+
+        .list-header span { color: var(--secondary); font-size: 0.8rem; text-transform: uppercase; letter-spacing: 1px; }
+
+        .anime-item {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 15px;
+            background: #1e293b44;
+            border-radius: 12px;
+            margin-bottom: 12px;
+            border: 1px solid #334155;
+        }
+
+        .anime-info { display: flex; align-items: center; gap: 15px; }
+        .anime-info img { width: 50px; height: 70px; object-fit: cover; border-radius: 8px; background: #000; border: 1px solid #334155; }
+        .anime-info h4 { margin: 0; font-size: 1rem; color: #fff; }
+        
+        .badge-lang { 
+            font-size: 0.7rem; 
+            background: #1e293b; 
+            color: var(--accent); 
+            padding: 3px 8px; 
+            border-radius: 5px; 
+            display: inline-block; 
+            margin-top: 5px;
+            border: 1px solid var(--accent);
+        }
+
+        .action-btns { display: flex; gap: 8px; }
+
+        .btn-publish { background: var(--success); color: #000; padding: 8px 16px; width: auto; font-size: 0.8rem; }
+        .btn-delete { background: var(--danger); color: #fff; padding: 8px 12px; width: auto; font-size: 0.8rem; }
+
+        #statusMsg { font-size: 0.85rem; text-align: center; margin-top: 15px; color: var(--secondary); font-style: italic; }
+
+        /* Loader Animation */
+        .spinner {
+            width: 20px;
+            height: 20px;
+            border: 3px solid rgba(255,255,255,0.3);
+            border-radius: 50%;
+            border-top-color: #fff;
+            animation: spin 1s ease-in-out infinite;
+            display: none;
+        }
+        @keyframes spin { to { transform: rotate(360deg); } }
+    </style>
+</head>
+<body>
+
+    <div class="container">
+        <header>
+            <div>
+                <h1 style="margin:0; font-size: 1.8rem; color: var(--accent);">Stream Weaver</h1>
+                <p style="color:var(--secondary); margin:0; font-size: 0.9rem;">Master Control Dashboard</p>
+            </div>
+            <div id="online-status" style="color: var(--success); font-size: 0.85rem;">● System Online</div>
+        </header>
+
+        <div class="stats-row">
+            <div class="stat-card">
+                <h2 id="totalCount">0</h2>
+                <p>Live on App</p>
+            </div>
+            <div class="stat-card">
+                <h2 id="pendingCount">0</h2>
+                <p>Pending Drafts</p>
+            </div>
+        </div>
+
+        <div class="admin-section">
+            <h3>⚡ Smart Auto-Sync</h3>
+            <p style="color: var(--secondary); font-size: 0.85rem; margin-top: -10px; margin-bottom: 20px;">
+                One-click scan for HiAnime (English), DesiDub (Multi), and TPX (Hindi).
+            </p>
+            <button class="btn-global" id="globalBtn" onclick="runGlobalCrawler()">
+                <div class="spinner" id="globalSpinner"></div>
+                <span id="globalText">🚀 Run Global Crawler</span>
+            </button>
+            <div id="statusMsg">Ready for new task</div>
+        </div>
+
+        <div class="admin-section">
+            <h3>🔗 Specific Manual Extract</h3>
+            <div class="input-group">
+                <input type="text" id="manualUrl" placeholder="Target Site URL (HiAnime/TPX/DesiDub)">
+                <input type="text" id="manualName" placeholder="Exact Anime Name">
+                <select id="manualLang">
+                    <option value="Hindi Sub">Hindi Sub (TPX Logic)</option>
+                    <option value="Multi Audio">Multi Audio (DesiDub Logic)</option>
+                    <option value="English Sub/Dub">English Sub/Dub (HiAnime Logic)</option>
+                </select>
+                <button class="btn-extract" id="extractBtn" onclick="triggerManualCrawl()">
+                    <div class="spinner" id="manualSpinner"></div>
+                    <span id="manualText">Extract & Save Draft</span>
+                </button>
+            </div>
+        </div>
+
+        <div class="list-container">
+            <div class="list-header">
+                <span>Review & Approve Drafts</span>
+                <span id="refreshTimer">Auto-refreshing...</span>
+            </div>
+            <div id="pendingList">
+                <p style="text-align:center; color:var(--secondary); padding: 20px;">Fetching latest drafts...</p>
+            </div>
         </div>
     </div>
-</div>
 
-<script>
-    // Button 1 logic
-    async function startExtraction() {
-        const url = document.getElementById('animeUrl').value;
-        const name = document.getElementById('animeName').value;
-        const res = await fetch('/api/admin/extract', {
-            method: 'POST',
-            headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({ url, animeName: name })
-        });
-        const data = await res.json();
-        alert(data.message);
-        loadDrafts(); // Refresh list
-    }
+    <script>
+        const API = window.location.origin + '/api/admin';
 
-    // Load Drafts for Review
-    async function loadDrafts() {
-        const res = await fetch('/api/admin/drafts');
-        const drafts = await res.json();
-        const container = document.getElementById('draftList');
-        container.innerHTML = drafts.map(d => `
-            <div style="border-bottom:1px solid #ccc; padding:10px; display:flex; justify-content:space-between; align-items:center;">
-                <span><strong>${d.title}</strong></span>
-                <button onclick="makeLive('${d._id}')" style="background:green;">Upload to Frontend</button>
-            </div>
-        `).join('') || "No drafts found.";
-    }
+        // 1. Dashboard Update (Stats + List)
+        async function updateDashboard() {
+            try {
+                const sumRes = await fetch(`${API}/summary`);
+                const sumData = await sumRes.json();
+                document.getElementById('totalCount').innerText = sumData.total;
 
-    // Button 2 logic
-    async function makeLive(id) {
-        const res = await fetch('/api/admin/publish/' + id, { method: 'POST' });
-        const data = await res.json();
-        if(data.success) {
-            alert("Success! Anime is now LIVE.");
-            loadDrafts();
+                const pendRes = await fetch(`${API}/pending`);
+                const drafts = await pendRes.json();
+                document.getElementById('pendingCount').innerText = drafts.length;
+
+                const container = document.getElementById('pendingList');
+                if (drafts.length === 0) {
+                    container.innerHTML = `<p style="text-align:center; color:var(--secondary); padding: 30px;">All caught up! No drafts pending approval.</p>`;
+                } else {
+                    container.innerHTML = drafts.map(item => `
+                        <div class="anime-item">
+                            <div class="anime-info">
+                                <img src="${item.poster || 'https://via.placeholder.com/50x70?text=?'}" alt="p">
+                                <div>
+                                    <h4>${item.title}</h4>
+                                    <span class="badge-lang">${item.language || 'General'}</span>
+                                </div>
+                            </div>
+                            <div class="action-btns">
+                                <button class="btn-publish" onclick="publishToLive('${item._id}')">PUSH LIVE</button>
+                                <button class="btn-delete" onclick="deleteDraft('${item._id}')">🗑️</button>
+                            </div>
+                        </div>
+                    `).join('');
+                }
+            } catch (err) {
+                console.error("Sync Error:", err);
+            }
         }
-    }
 
-    loadDrafts(); // Initial load
-</script>
+        // 2. Global Crawler Trigger
+        async function runGlobalCrawler() {
+            const btn = document.getElementById('globalBtn');
+            const spinner = document.getElementById('globalSpinner');
+            const text = document.getElementById('globalText');
+            
+            btn.disabled = true;
+            spinner.style.display = 'block';
+            text.innerText = 'Crawling Sites...';
+
+            try {
+                const res = await fetch(`${API}/start-extract`, { method: 'POST' });
+                const data = await res.json();
+                alert(data.message);
+                document.getElementById('statusMsg').innerText = "Crawler is working in background...";
+            } catch (e) {
+                alert("Crawler connection failed!");
+            } finally {
+                setTimeout(() => {
+                    btn.disabled = false;
+                    spinner.style.display = 'none';
+                    text.innerText = '🚀 Run Global Crawler';
+                    updateDashboard();
+                }, 3000);
+            }
+        }
+
+        // 3. Manual Extraction
+        async function triggerManualCrawl() {
+            const url = document.getElementById('manualUrl').value;
+            const animeName = document.getElementById('manualName').value;
+            const language = document.getElementById('manualLang').value;
+            const btn = document.getElementById('extractBtn');
+            const spinner = document.getElementById('manualSpinner');
+
+            if (!url || !animeName) return alert("Pehle URL aur Name toh dalo!");
+
+            btn.disabled = true;
+            spinner.style.display = 'block';
+
+            try {
+                const res = await fetch(`${API}/manual-extract`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ url, animeName, language })
+                });
+                const data = await res.json();
+                alert(data.message);
+                
+                document.getElementById('manualUrl').value = '';
+                document.getElementById('manualName').value = '';
+            } catch (err) {
+                alert("Extraction trigger failed!");
+            } finally {
+                btn.disabled = false;
+                spinner.style.display = 'none';
+                setTimeout(updateDashboard, 5000);
+            }
+        }
+
+        // 4. Publish (Live)
+        async function publishToLive(id) {
+            try {
+                const res = await fetch(`${API}/publish/${id}`, { method: 'POST' });
+                const data = await res.json();
+                if(data.success) {
+                    updateDashboard();
+                }
+            } catch (e) { alert("Publish failed!"); }
+        }
+
+        // 5. Delete Draft
+        async function deleteDraft(id) {
+            if(!confirm("Are you sure? Draft permanently delete ho jayega.")) return;
+            try {
+                await fetch(`${API}/delete/${id}`, { method: 'DELETE' });
+                updateDashboard();
+            } catch (e) { alert("Delete failed!"); }
+        }
+
+        // Auto Refresh
+        setInterval(updateDashboard, 15000);
+        updateDashboard();
+    </script>
+</body>
+</html>
