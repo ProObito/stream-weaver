@@ -1,20 +1,28 @@
 const express = require('express');
 const router = express.Router();
+const mongoose = require('mongoose');
 const { extractAndUpload } = require('../extractors/seriesExtractor');
 
-// Manual Extract Endpoint
+// Manual Start
 router.post('/manual-extract', async (req, res) => {
     const { url, animeName, language } = req.body;
     const API_KEY = 'ff36f8749fb231991d6381abac9c4ec0';
+    extractAndUpload(url, animeName, "Manual", API_KEY, language);
+    res.json({ message: "Full Series extraction started in background!" });
+});
 
-    if (!url || !animeName) {
-        return res.status(400).json({ error: "URL aur Name dono bharna zaroori hai!" });
-    }
+// Drafts list
+router.get('/pending', async (req, res) => {
+    const Series = mongoose.model('Series');
+    const drafts = await Series.find({ isPublished: false });
+    res.json(drafts);
+});
 
-    // Process start karke turant response dena taaki frontend hang na ho
-    extractAndUpload(url, animeName, "Manual", API_KEY, language || "Hindi Sub");
-    
-    res.json({ message: "Extraction shuru ho gaya hai. Check Heroku logs!" });
+// Publish (Live)
+router.post('/publish/:id', async (req, res) => {
+    const Series = mongoose.model('Series');
+    await Series.findByIdAndUpdate(req.params.id, { isPublished: true });
+    res.json({ success: true, message: "Published to App!" });
 });
 
 module.exports = router;
