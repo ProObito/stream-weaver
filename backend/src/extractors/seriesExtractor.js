@@ -1,75 +1,75 @@
 const axios = require('axios');
 const cheerio = require('cheerio');
 const mongoose = require('mongoose');
+const { extractAndUpload } = require('../extractors/seriesExtractor');
 
-async function extractAndUpload(url, animeName, siteName, siteKey, skipCount = 0, languageTag) {
-    try {
-        const Episode = mongoose.model('Episode');
-        const Series = mongoose.model('Series');
-
-        const response = await axios.get('https://api.zenrows.com/v1/', {
-            params: { 'url': url, 'apikey': siteKey, 'js_render': 'true', 'premium_proxy': 'true' }
-        });
-
-        const $ = cheerio.load(response.data);
-        let foundLinks = [];
-
-        // Exact pattern for download links
-        $('a').each((i, el) => {
-            const link = $(el).attr('href');
-            if (link && /pixeldrain|gdrive|drive|streamtape|720p|1080p|download/i.test(link)) {
-                foundLinks.push(link);
-            }
-        });
-
-        let uniqueLinks = [...new Set(foundLinks)];
-        if (uniqueLinks.length === 0) return;
-
-        // Create Series
-        let series = await Series.findOneAndUpdate(
-            { title: animeName },
-            { $set: { lastUpdated: new Date() } },
-            { upsert: true, new: true }
-        );
-
-        for (let i = 0; i < uniqueLinks.length; i++) {
-            const epNum = i + 1;
-            const exists = await Episode.findOne({ seriesId: series._id, episodeNumber: epNum, language: languageTag });
-            if (exists) continue;
-
-            const finalTitle = `${animeName} - Ep ${epNum} [${languageTag}]`;
-            
-            // STREAMTAPE UPLOAD
-            const stUrl = `https://api.streamtape.com/file/remoteupload/add`;
-            try {
-                const up = await axios.get(stUrl, {
-                    params: {
-                        login: process.env.STREAMTAPE_LOGIN,
-                        key: process.env.STREAMTAPE_KEY,
-                        url: uniqueLinks[i],
-                        name: finalTitle
-                    }
-                });
-                
-                if (up.data && up.data.status === 200) {
-                    await Episode.create({
-                        seriesId: series._id,
-                        title: finalTitle,
-                        remoteId: up.data.result.id,
-                        episodeNumber: epNum,
-                        language: languageTag,
-                        status: 'ready'
-                    });
-                    console.log(`✨ Success: ${finalTitle}`);
-                } else {
-                    console.log(`⚠️ Streamtape Rejected: ${up.data.msg}`);
-                }
-            } catch (uErr) {
-                console.log(`❌ Upload Network Error`);
-            }
-            await new Promise(r => setTimeout(r, 1500));
+async function crawlAllSites() {
+    const Series = mongoose.model('Series');
+    const Episode = mongoose.model('Episode');
+    const API_KEY = 'c3a27fd2ab87b6c7da47577e5c4a61c94d4f6ba8'; // Teri New Key
+    
+    const sites = [
+        { 
+            name: 'HindiSubAnime', 
+            url: 'http://hindisubanime.co/anime-list/', // Direct List Page
+            selector: '.entry-title a, .post-title a', 
+            lang: 'Hindi Sub' 
         }
-    } catch (err) { console.log(`❌ Extractor Error: ${animeName}`); }
+    ];
+
+    console.log("🚀 Targeting HindiSubAnime.co - Full Archive Mode...");
+
+    for (const site of sites) {
+        try {
+            console.log(`📡 Scanning: ${site.name}`);
+            const res = await axios.get('https://api.zenrows.com/v1/', {
+                params: { 
+                    'url': site.url, 
+                    'apikey': API_KEY, 
+                    'premium_proxy': 'true',
+                    'js_render': 'true' 
+                }
+            });
+
+            const $ = cheerio.load(res.data);
+            let animeLinks = [];
+
+            $(site.selector).each((i, el) => {
+                const title = $(el).text().trim();
+                const link = $(el).attr('href');
+                
+                // Filtering: Sirf real anime titles uthao
+                const junkWords = /watch|download|now|series|episode|okamura|hirata|ai|cast|voice|policy|dmca|contact/i;
+                if (link && link.includes('http') && title.length > 5 && !junkWords.test(title)) {
+                    if (!animeLinks.find(a => a.link === link)) {
+                        animeLinks.push({ title, link });
+                    }
+                }
+            });
+
+            console.log(`✅ Found ${animeLinks.length} Anime Titles on HindiSubAnime`);
+
+            for (const item of animeLinks) {
+                // Resume Logic: Skip if already in DB
+                let series = await Series.findOne({ title: { $regex: new RegExp(`^${item.title}$`, 'i') } });
+                if (series) {
+                    const count = await Episode.countDocuments({ seriesId: series._id, language: site.lang });
+                    if (count > 0) {
+                        console.log(`⏩ Skipping: ${item.title} (Already Synced)`);
+                        continue;
+                    }
+                }
+
+                console.log(`🎬 Extracting Episodes: ${item.title}`);
+                await extractAndUpload(item.link, item.title, site.name, API_KEY, 0, site.lang);
+                
+                // API Health Gap
+                await new Promise(r => setTimeout(r, 2500));
+            }
+        } catch (err) {
+            console.error(`❌ HindiSubAnime Error:`, err.message);
+        }
+    }
 }
 
-module.exports = { extractAndUpload };
+module.exports = { crawlAllSites };
