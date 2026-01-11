@@ -1,76 +1,39 @@
 const axios = require('axios');
 const cheerio = require('cheerio');
-const mongoose = require('mongoose');
+const { extractAndUpload } = require('../extractors/seriesExtractor');
 
-// Extractor import
-let extractAndUpload;
-try {
-    const extractor = require('../extractors/seriesExtractor');
-    extractAndUpload = extractor.extractAndUpload;
-} catch (e) {
-    console.error("❌ Extractor Load Error");
-}
+const HEADERS = { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0 Safari/537.36' };
 
-async function crawlAllSites() {
-    const Series = mongoose.model('Series');
-    const Episode = mongoose.model('Episode');
-    const API_KEY = 'ff36f8749fb231991d6381abac9c4ec0';
-    
-    // Nayi Site Config
-    const sites = [
-        { 
-            name: 'TPXSub', 
-            url: 'https://www.tpxsub.com/animes-in-hindi-sub/', 
-            lang: 'Hindi Sub',
-            active: true 
-        }
-    ];
+const startGlobalCrawl = async () => {
+    console.log("🚀 Global Crawling Started...");
 
-    console.log("🚀 Starting TPXSub Scraper...");
+    // 1. TPXSub (Hindi Subbed)
+    try {
+        const res = await axios.get('https://tpxsub.com/', { headers: HEADERS });
+        const $ = cheerio.load(res.data);
+        $('.entry-title a').slice(0, 5).each((i, el) => {
+            extractAndUpload($(el).attr('href'), $(el).text().trim(), "Hindi Sub");
+        });
+    } catch (e) { console.log("TPX Crawl Failed"); }
 
-    for (const site of sites) {
-        try {
-            // ScraperAPI URL with retry_404=true as you provided
-            const targetUrl = `https://api.scraperapi.com/?api_key=${API_KEY}&url=${encodeURIComponent(site.url)}&render=true&retry_404=true`;
-            
-            const res = await axios.get(targetUrl, { timeout: 120000 });
-            const $ = cheerio.load(res.data);
-            
-            let animeLinks = [];
+    // 2. DesiDub (Multi Audio / Hindi Dub)
+    try {
+        const res = await axios.get('https://desidub.to/', { headers: HEADERS }); // Example URL
+        const $ = cheerio.load(res.data);
+        $('.post-title a').slice(0, 5).each((i, el) => {
+            extractAndUpload($(el).attr('href'), $(el).text().trim(), "Multi Audio");
+        });
+    } catch (e) { console.log("DesiDub Crawl Failed"); }
 
-            // TPXSub specific selector: Ye log aksar 'article' ya 'entry-title' use karte hain
-            $('.entry-title a, .post-title a').each((i, el) => {
-                const title = $(el).text().trim();
-                const link = $(el).attr('href');
-                
-                if (link && link.includes('/anime/') || link.includes('/series/')) {
-                    if (!animeLinks.find(a => a.link === link)) {
-                        animeLinks.push({ title, link });
-                    }
-                }
-            });
+    // 3. HiAnime (English Sub/Dub)
+    try {
+        const res = await axios.get('https://hianime.to/recently-updated', { headers: HEADERS });
+        const $ = cheerio.load(res.data);
+        $('.flw-item .film-name a').slice(0, 5).each((i, el) => {
+            const link = "https://hianime.to" + $(el).attr('href');
+            extractAndUpload(link, $(el).text().trim(), "English Sub/Dub");
+        });
+    } catch (e) { console.log("HiAnime Crawl Failed"); }
+};
 
-            console.log(`✅ TPXSub: Found ${animeLinks.length} Titles`);
-
-            // Sirf Top 5 check karte hain test ke liye
-            for (const item of animeLinks.slice(0, 5)) {
-                try {
-                    let series = await Series.findOne({ title: { $regex: new RegExp(`^${item.title}$`, 'i') } });
-                    if (series) continue; 
-                    
-                    console.log(`🎬 Processing: ${item.title}`);
-                    if (typeof extractAndUpload === 'function') {
-                        await extractAndUpload(item.link, item.title, site.name, API_KEY, site.lang);
-                    }
-                    await new Promise(r => setTimeout(r, 5000)); 
-                } catch (err) {
-                    console.error(`❌ Error on ${item.title}:`, err.message);
-                }
-            }
-        } catch (err) {
-            console.error(`❌ Scraper Fail: ${err.message}`);
-        }
-    }
-}
-
-module.exports = { crawlAllSites };
+module.exports = { startGlobalCrawl };
