@@ -7,32 +7,35 @@ async function processEpisodes(series, episodeList) {
 
   for (const epData of episodeList) {
     try {
-      // Check if exists
-      let episode = await Episode.findOne({ seriesId: series._id, episodeNumber: epData.episode });
+      // 1. Check if episode already exists for this series
+      let episode = await Episode.findOne({ 
+        seriesId: series._id, 
+        episodeNumber: epData.episode 
+      });
 
-      // Agar pehle se ready hai ya processing hai, toh skip karo
+      // Status check: Agar pehle se upload ho raha hai ya ho chuka hai, skip karo
       if (episode && (episode.status === 'ready' || episode.status === 'processing')) {
         continue;
       }
 
-      // Create Entry if new
+      // 2. Naya episode entry banao agar nahi hai
       if (!episode) {
         episode = await Episode.create({
           seriesId: series._id,
-          title: epData.title,
+          title: epData.title || `Episode ${epData.episode}`,
           episodeNumber: epData.episode,
           status: 'pending'
         });
       }
 
-      // Get Link
-      const sourceLink = epData.streams[0]?.link;
+      // 3. Source link check
+      const sourceLink = epData.streams?.[0]?.link || epData.link; // Dono formats support karega
       if (!sourceLink) {
         await episode.updateOne({ status: 'failed', errorReason: 'No source link found' });
         continue;
       }
 
-      // Trigger Remote Upload
+      // 4. Remote Upload trigger (Streamtape API)
       const remoteId = await addRemoteUpload(sourceLink);
 
       if (remoteId) {
@@ -43,12 +46,13 @@ async function processEpisodes(series, episodeList) {
           errorReason: null
         });
         queuedCount++;
+        console.log(`✅ Ep ${epData.episode} queued to Streamtape.`);
       } else {
-        await episode.updateOne({ status: 'failed', errorReason: 'API Request Failed' });
+        await episode.updateOne({ status: 'failed', errorReason: 'Streamtape API Failed' });
       }
 
     } catch (error) {
-      console.error(`Error queuing Ep ${epData.episode}:`, error.message);
+      console.error(`❌ Error in Ep ${epData.episode}:`, error.message);
     }
   }
   
