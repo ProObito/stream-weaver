@@ -11,21 +11,26 @@ app.use(express.urlencoded({ extended: true }));
 require('./models/Series');
 require('./models/Episode');
 
-// STATIC FILES CONFIG
-// Ye line check kar, 'public' folder ko serve karne ke liye
-app.use(express.static(path.join(__dirname, '../public')));
+// Static folder (public)
+const publicPath = path.join(__dirname, '..', 'public');
+app.use(express.static(publicPath));
 
-// Routes
+// Admin Route - Seedha admin.html ko point kar raha hai
+app.get('/admin', (req, res) => {
+    res.sendFile(path.join(publicPath, 'admin.html'), (err) => {
+        if (err) {
+            console.error("File Load Error:", err);
+            res.status(404).send("Bhai, 'backend/public/admin.html' nahi mili. Folder check kar!");
+        }
+    });
+});
+
+// API Routes
 const adminRoutes = require('./routes/admin.routes');
 app.use('/api/admin', adminRoutes);
 
-// Agar koi seedha /admin par jaye toh use index.html bhejo
-app.get('/admin', (req, res) => {
-    res.sendFile(path.join(__dirname, '../public/admin/index.html'));
-});
-
 app.get('/', (req, res) => {
-    res.send('Stream Weaver Backend Running');
+    res.send('Backend is Live! Go to /admin to access the panel.');
 });
 
 module.exports = app;
