@@ -7,7 +7,8 @@ const extractAndUpload = async (url, animeName, siteName, siteKey, languageTag) 
         const Episode = mongoose.model('Episode');
         const Series = mongoose.model('Series');
 
-        const targetUrl = `https://api.scraperapi.com/?api_key=${siteKey}&url=${encodeURIComponent(url)}&render=true`;
+        // Added retry_404 here too
+        const targetUrl = `https://api.scraperapi.com/?api_key=${siteKey}&url=${encodeURIComponent(url)}&render=true&retry_404=true`;
         
         const response = await axios.get(targetUrl, { timeout: 60000 });
         const $ = cheerio.load(response.data);
@@ -16,7 +17,8 @@ const extractAndUpload = async (url, animeName, siteName, siteKey, languageTag) 
         $('a').each((i, el) => {
             const link = $(el).attr('href');
             const text = $(el).text().toLowerCase();
-            if (link && /pixeldrain|gdrive|drive|stream|720p|1080p|4k|download/i.test(link + text)) {
+            // Expanded search for more video hosts
+            if (link && /pixeldrain|gdrive|drive|stream|720p|1080p|4k|download|dood|mixdrop/i.test(link + text)) {
                 let weight = link.includes('4k') ? 4000 : link.includes('1080') ? 1080 : 720;
                 linkData.push({ link, weight });
             }
@@ -40,7 +42,7 @@ const extractAndUpload = async (url, animeName, siteName, siteKey, languageTag) 
             }
         });
 
-        if (up.data.status === 200) {
+        if (up.data && up.data.status === 200) {
             await Episode.create({
                 seriesId: series._id,
                 title: `${animeName}`,
