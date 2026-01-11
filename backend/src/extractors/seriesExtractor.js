@@ -7,14 +7,13 @@ const extractAndUpload = async (mainUrl, animeName, siteName, siteKey, languageT
         const Series = mongoose.model('Series');
         const Episode = mongoose.model('Episode');
 
-        console.log(`🚀 Mission: ${animeName} - Scanning All Episodes`);
+        console.log(`🚀 Starting Full Scan: ${animeName}`);
 
-        // 1. Scrape Main Page
         const scraperUrl = `https://api.scraperapi.com/?api_key=${siteKey}&url=${encodeURIComponent(mainUrl)}&render=true`;
         const mainRes = await axios.get(scraperUrl);
         const $main = cheerio.load(mainRes.data);
 
-        // 2. Get Info from MAL
+        // Fetch MAL Info
         let poster = "", description = "";
         try {
             const mal = await axios.get(`https://api.jikan.moe/v4/anime?q=${encodeURIComponent(animeName)}&limit=1`);
@@ -22,16 +21,14 @@ const extractAndUpload = async (mainUrl, animeName, siteName, siteKey, languageT
                 poster = mal.data.data[0].images.jpg.large_image_url;
                 description = mal.data.data[0].synopsis;
             }
-        } catch (e) { console.log("MAL Fetch Failed, skipping..."); }
+        } catch (e) { console.log("MAL Skip"); }
 
-        // 3. Save as Draft
         const series = await Series.findOneAndUpdate(
             { title: { $regex: new RegExp(`^${animeName}$`, 'i') } },
             { poster, description, sourceUrl: mainUrl, isPublished: false },
-            { upsert: true, new: true, runValidators: false }
+            { upsert: true, new: true }
         );
 
-        // 4. Collect All Episode Links
         let epLinks = [];
         $main('a').each((i, el) => {
             const href = $main(el).attr('href');
@@ -39,15 +36,13 @@ const extractAndUpload = async (mainUrl, animeName, siteName, siteKey, languageT
                 epLinks.push(href);
             }
         });
+
         const uniqueEps = [...new Set(epLinks)];
         console.log(`📦 Found ${uniqueEps.length} episodes.`);
 
-        // 5. Loop & Upload
         for (let i = 0; i < uniqueEps.length; i++) {
             try {
                 const epNum = i + 1;
-                console.log(`⏳ Processing Ep ${epNum}...`);
-                
                 const epScrapeUrl = `https://api.scraperapi.com/?api_key=${siteKey}&url=${encodeURIComponent(uniqueEps[i])}&render=true`;
                 const epRes = await axios.get(epScrapeUrl);
                 const $ep = cheerio.load(epRes.data);
@@ -74,12 +69,12 @@ const extractAndUpload = async (mainUrl, animeName, siteName, siteKey, languageT
                             { title: `Episode ${epNum}`, remoteId: up.data.result.id, language: languageTag },
                             { upsert: true }
                         );
-                        console.log(`✅ Ep ${epNum} Uploaded`);
+                        console.log(`✅ Ep ${epNum} Done`);
                     }
                 }
-            } catch (err) { console.log(`❌ Error in Ep Loop: ${err.message}`); }
+            } catch (err) { console.log(`Error in Loop: ${err.message}`); }
         }
-    } catch (err) { console.error(`🛑 Global Error: ${err.message}`); }
+    } catch (err) { console.error(`Global Error: ${err.message}`); }
 };
 
 module.exports = { extractAndUpload };
