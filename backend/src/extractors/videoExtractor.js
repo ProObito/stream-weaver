@@ -1,109 +1,100 @@
 const mongoose = require('mongoose');
 const axios = require('axios');
 
-// Helper to define models if not already defined
+// Models Safety Check
 const Series = mongoose.models.Series || mongoose.model('Series', new mongoose.Schema({
     title: String,
     sourceUrl: String,
     language: String,
-    isPublished: Boolean,
-    poster: String,
-    description: String
+    isPublished: Boolean
 }));
 
 const Episode = mongoose.models.Episode || mongoose.model('Episode', new mongoose.Schema({
     seriesId: { type: mongoose.Schema.Types.ObjectId, ref: 'Series' },
     episodeNumber: Number,
     link: String,
-    remoteId: String, // Pehle Ticket ID hoga, baad mein Video ID ban jayega
+    remoteId: String,
     title: String,
     season: Number,
-    status: { type: String, default: 'pending' } // pending, processing, completed, failed
+    status: { type: String, default: 'pending' }
 }));
 
-// --- 1. SAVE/UPDATE EPISODES (Called by Extractor) ---
+// --- 1. GENERIC SAVE (Used by other scrapers if any) ---
 const processEpisodes = async (series, episodeList) => {
     try {
-        console.log(`💾 Saving ${episodeList.length} episodes to DB for ${series.title}...`);
-
+        console.log(`💾 Saving episodes for ${series.title}...`);
         for (const ep of episodeList) {
             await Episode.findOneAndUpdate(
                 { seriesId: series._id, episodeNumber: ep.episode },
                 {
                     link: ep.link,
                     title: ep.title,
-                    season: ep.season || 1,
-                    // Note: remoteId update nahi kar rahe yahan, wo extractAndUpload karega
-                    // Hum bas structure bana rahe hain agar nahi hai toh
+                    season: 1
                 },
                 { upsert: true, new: true }
             );
         }
-        console.log(`✅ DB Sync Complete for ${series.title}`);
     } catch (err) {
-        console.error("Error in processEpisodes:", err.message);
+        console.error("Process Error:", err.message);
     }
 };
 
-// --- 2. CHECK STATUS OF PENDING UPLOADS (The Magic Fix) ---
+// --- 2. DOODSTREAM STATUS CHECKER (The Magic Part) ---
 const checkRemoteStatus = async () => {
     try {
-        const login = process.env.STREAMTAPE_LOGIN;
-        const key = process.env.STREAMTAPE_KEY;
-
-        if (!login || !key) {
-            console.error("❌ Missing Streamtape Credentials in Environment Variables");
+        const key = process.env.DOODSTREAM_KEY;
+        
+        if (!key) {
+            console.error("❌ DoodStream Key missing for status check.");
             return;
         }
 
-        // Sirf unhe dhoondo jo 'processing' hain (Jinka Ticket ID hai par Video ID nahi)
-        const pendingEpisodes = await Episode.find({ status: 'processing' });
-
-        if (pendingEpisodes.length === 0) {
+        // Find uploads that are still 'processing'
+        const pendingEps = await Episode.find({ status: 'processing' });
+        
+        if (pendingEps.length === 0) {
             console.log("ℹ️ No pending uploads to check.");
             return;
         }
 
-        console.log(`🕵️ Checking Streamtape status for ${pendingEpisodes.length} tickets...`);
+        console.log(`🕵️ Checking DoodStream status for ${pendingEps.length} files...`);
 
-        for (const ep of pendingEpisodes) {
+        for (const ep of pendingEps) {
             try {
-                // Streamtape API call
-                const { data } = await axios.get(`https://api.streamtape.com/remotedl/status?login=${login}&key=${key}&id=${ep.remoteId}`);
+                // DoodStream Check API
+                const url = `https://doodapi.com/api/url/check?key=${key}&file_code=${ep.remoteId}`;
+                const { data } = await axios.get(url);
 
                 if (data.status === 200 && data.result) {
-                    // Streamtape response format: result: { "TicketID": { ...data... } }
-                    const ticketData = data.result[ep.remoteId];
+                    // DoodStream result can be an object or array, handle both
+                    const fileData = Array.isArray(data.result) ? data.result[0] : data.result;
 
-                    if (!ticketData) {
-                        console.log(`⚠️ Ticket ${ep.remoteId} not found in Streamtape response.`);
-                        continue;
-                    }
+                    if (!fileData) continue;
 
-                    if (ticketData.status === 'finished') {
-                        // 🎉 SUCCESS: Ticket ID ko Asali Video ID se replace karo
+                    // Status Logic:
+                    // 'active' = Ready to watch
+                    // 'error' = Download failed
+                    
+                    if (fileData.status === 'active') {
                         await Episode.findByIdAndUpdate(ep._id, {
-                            remoteId: ticketData.remoteid, // This is the real Video ID
+                            remoteId: fileData.file_code, 
                             status: 'completed'
                         });
-                        console.log(`✅ Ep ${ep.episodeNumber} is LIVE! (Video ID: ${ticketData.remoteid})`);
+                        console.log(`✅ Ep ${ep.episodeNumber} is LIVE!`);
                     
-                    } else if (ticketData.status === 'failed') {
-                        // ❌ FAIL: Download fail ho gaya
+                    } else if (fileData.status === 'error') {
                         await Episode.findByIdAndUpdate(ep._id, { status: 'failed' });
-                        console.log(`❌ Ep ${ep.episodeNumber} Failed on Streamtape.`);
-                    
+                        console.log(`❌ Ep ${ep.episodeNumber} Failed on DoodStream.`);
                     } else {
-                        // ⏳ WAITING: Abhi download chal raha hai
-                        // Optional: Percentage log kar sakte ho
-                        // console.log(`⏳ Ep ${ep.episodeNumber} downloading...`);
+                        // Still processing...
+                        // console.log(`⏳ Ep ${ep.episodeNumber} still downloading...`);
                     }
                 }
             } catch (innerErr) {
-                console.error(`Error checking ticket ${ep.remoteId}:`, innerErr.message);
+                console.error(`Check Error for Ep ${ep.episodeNumber}:`, innerErr.message);
             }
         }
-        console.log("🏁 Status check cycle finished.");
+        console.log("🏁 Status Check Cycle Finished.");
 
     } catch (err) {
         console.error("❌ Error in checkRemoteStatus:", err.message);
