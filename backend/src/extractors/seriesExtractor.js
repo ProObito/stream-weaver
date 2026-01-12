@@ -2,19 +2,17 @@ const axios = require('axios');
 const mongoose = require('mongoose');
 
 // --- CONFIGURATION ---
-// Tera Vercel API URL
 const API_BASE_URL = "https://hianimeapi-ochre.vercel.app"; 
 
-// Helper: Delay to prevent rate limits or IP bans
+// Helper: Delay function
 const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
 /**
- * 🚀 1. DOODSTREAM REMOTE UPLOAD
- * Send the direct video link to DoodStream
+ * 🚀 1. DOODSTREAM UPLOAD
  */
 const addRemoteUpload = async (videoUrl) => {
     const key = process.env.DOODSTREAM_KEY;
-    if (!key) throw new Error("DoodStream API Key missing in Heroku Config Vars!");
+    if (!key) throw new Error("DoodStream API Key missing!");
 
     const apiUrl = `https://doodapi.com/api/upload/url?key=${key}&url=${encodeURIComponent(videoUrl)}`;
     
@@ -31,25 +29,21 @@ const addRemoteUpload = async (videoUrl) => {
 };
 
 /**
- * 🔗 2. GET DIRECT VIDEO LINK (From Vercel API)
- * Route: /hianime/watch?episodeId=...
+ * 🔗 2. GET DIRECT VIDEO LINK
+ * Route: /hianime/watch?episodeId={id}
  */
 const getLinkFromApi = async (episodeId) => {
     try {
         const apiUrl = `${API_BASE_URL}/hianime/watch?episodeId=${episodeId}`;
-        
         const { data } = await axios.get(apiUrl);
 
-        // API Response: { sources: [{ url: "...", quality: "default", isM3U8: true }] }
-        if (data && data.sources && data.sources.length > 0) {
-            // Find the best source (usually 'auto' or 'default')
+        if (data && data.sources) {
             const source = data.sources.find(s => s.quality === 'auto') || 
                            data.sources.find(s => s.quality === 'default') || 
                            data.sources[0];
-            return source.url; 
+            return source ? source.url : null;
         }
         return null;
-
     } catch (err) {
         console.error(`API Watch Error (${episodeId}):`, err.message);
         return null;
@@ -57,23 +51,37 @@ const getLinkFromApi = async (episodeId) => {
 };
 
 /**
- * 📋 3. GET EPISODE LIST (From Vercel API)
- * Route: /hianime/info?id=...
+ * 📋 3. GET EPISODE LIST (SMART FETCH)
+ * Route: /hianime/info?id={id}
  */
 const getEpisodesFromApi = async (animeId) => {
     try {
         const apiUrl = `${API_BASE_URL}/hianime/info?id=${animeId}`;
+        console.log(`📡 Fetching Info from: ${apiUrl}`);
+
         const { data } = await axios.get(apiUrl);
         
-        // Response format check
-        if (data && data.episodes) {
-            return data.episodes; 
-        } else if (data && data.anime && data.anime.episodes) {
-            return data.anime.episodes;
+        // --- DEBUGGING LOG (Zaroori hai) ---
+        // Ye batayega ki API kya bhej rahi hai agar episodes nahi mile
+        if (!data) console.log("⚠️ API returned empty data.");
+        else console.log("✅ API Response Keys:", Object.keys(data));
+
+        // --- SMART EXTRACTION ---
+        // Alag-alag jagah check karo jahan episodes chhupe ho sakte hain
+        let episodes = [];
+        
+        if (Array.isArray(data.episodes)) {
+            episodes = data.episodes;
+        } else if (data.anime && Array.isArray(data.anime.episodes)) {
+            episodes = data.anime.episodes;
+        } else if (data.data && Array.isArray(data.data.episodes)) {
+            episodes = data.data.episodes;
         }
-        return [];
+
+        return episodes;
+
     } catch (err) {
-        console.error(`Episode List Error (${animeId}):`, err.message);
+        console.error(`Episode List Request Error:`, err.message);
         return [];
     }
 };
@@ -86,23 +94,31 @@ const extractAndUpload = async (mainUrl, animeName, languageTag) => {
         const Episode = mongoose.model('Episode');
         const Series = mongoose.model('Series');
 
-        console.log(`🚀 Starting Sync via API: ${animeName}`);
+        console.log(`🚀 Starting Sync: ${animeName}`);
 
-        // --- ID EXTRACTION LOGIC ---
-        // URL Example 1: https://hianime.to/one-piece-100
-        // URL Example 2: https://hianime.to/watch/one-piece-100?ep=123
-        let animeId = '';
-
-        if (mainUrl.includes('/watch/')) {
-            animeId = mainUrl.split('/watch/')[1].split('?')[0];
-        } else {
-            animeId = mainUrl.split('/').pop().split('?')[0];
+        // --- ID EXTRACTION ---
+        // URL se ID nikalne ka foolproof tareeka
+        let animeId = "";
+        try {
+            const urlObj = new URL(mainUrl);
+            const pathSegments = urlObj.pathname.split('/').filter(Boolean); // Remove empty strings
+            
+            // hianime.to/watch/attack-on-titan-112?ep=3 -> attack-on-titan-112
+            if (pathSegments.includes('watch')) {
+                animeId = pathSegments[pathSegments.indexOf('watch') + 1];
+            } else {
+                // hianime.to/attack-on-titan-112 -> attack-on-titan-112
+                animeId = pathSegments[pathSegments.length - 1];
+            }
+        } catch (e) {
+            console.error("❌ Invalid URL format");
+            return;
         }
 
         console.log(`ℹ️ Extracted ID: ${animeId}`);
 
         if (!animeId) {
-            console.error("❌ Could not extract Anime ID from URL.");
+            console.error("❌ Could not extract Anime ID.");
             return;
         }
 
@@ -112,44 +128,35 @@ const extractAndUpload = async (mainUrl, animeName, languageTag) => {
             series = await Series.create({ title: `${animeName} (${languageTag})`, sourceUrl: mainUrl, language: languageTag });
         }
 
-        // 2. Get Episodes from API
+        // 2. Get Episodes
         const episodes = await getEpisodesFromApi(animeId);
         console.log(`🔍 Found ${episodes.length} episodes via API.`);
 
         if (episodes.length === 0) {
-            console.log("⚠️ No episodes found. Logs check karo ki API URL sahi hai ya Anime ID.");
+            console.log("⚠️ 0 Episodes found. Logs check karo 'API Response Keys' ke liye.");
             return;
         }
 
         for (let ep of episodes) {
             try {
-                // Determine Episode Number
                 const epNum = ep.number; 
-
-                // Check if exists
+                
                 const existing = await Episode.findOne({ seriesId: series._id, episodeNumber: epNum });
                 if (existing && existing.status === 'completed') {
                     console.log(`⏭️ Skipping Ep ${epNum} (Already Live)`);
                     continue;
                 }
 
-                // STEP A: Get Link from API
-                // Note: API returns 'episodeId' inside the episode object
                 const directLink = await getLinkFromApi(ep.episodeId);
                 
                 if (directLink) {
-                    // STEP B: Upload to DoodStream
                     console.log(`📡 Sending Ep ${epNum} to DoodStream...`);
                     const fileCode = await addRemoteUpload(directLink);
 
                     if (fileCode) {
                         await Episode.findOneAndUpdate(
                             { seriesId: series._id, episodeNumber: epNum },
-                            { 
-                                remoteId: fileCode, 
-                                status: 'processing', 
-                                title: ep.title 
-                            },
+                            { remoteId: fileCode, status: 'processing', title: ep.title },
                             { upsert: true }
                         );
                         console.log(`✅ Ep ${epNum} Queued! FileCode: ${fileCode}`);
@@ -157,14 +164,12 @@ const extractAndUpload = async (mainUrl, animeName, languageTag) => {
                         console.log(`❌ DoodStream Failed for Ep ${epNum}`);
                     }
                 } else {
-                    console.log(`❌ No Link found for Ep ${epNum} (API return null)`);
+                    console.log(`❌ No Link found for Ep ${epNum}`);
                 }
 
             } catch (err) {
                 console.error(`❌ Ep Error: ${err.message}`);
             }
-            
-            // 2 Second delay is enough for API
             await sleep(2000); 
         }
         console.log(`🏁 Sync Finished for ${animeName}`);
