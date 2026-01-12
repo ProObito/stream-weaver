@@ -2,72 +2,74 @@ const axios = require('axios');
 const cheerio = require('cheerio');
 const mongoose = require('mongoose');
 
-// Helper to wait between requests
+// Delay Helper (Anti-Ban)
 const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
 /**
- * TRIGGER REMOTE UPLOAD TO STREAMTAPE
- * Streamtape ko sirf link bhejte hain, download wo khud karega
+ * 🚀 DOODSTREAM REMOTE UPLOAD
+ * Video URL bhejte hain, DoodStream khud download karega
  */
 const addRemoteUpload = async (videoUrl) => {
-    const login = process.env.STREAMTAPE_LOGIN;
-    const key = process.env.STREAMTAPE_KEY;
+    const key = process.env.DOODSTREAM_KEY; // Heroku Config Var se key lega
 
-    if (!login || !key) {
-        throw new Error("Streamtape API credentials missing in Environment Variables");
-    }
+    if (!key) throw new Error("DoodStream API Key is missing in Environment Variables!");
 
-    // URL ko encode karna zaroori hai
-    const apiUrl = `https://api.streamtape.com/remotedl/add?login=${login}&key=${key}&url=${encodeURIComponent(videoUrl)}`;
+    // DoodStream API Call
+    const apiUrl = `https://doodapi.com/api/upload/url?key=${key}&url=${encodeURIComponent(videoUrl)}`;
     
-    const { data } = await axios.get(apiUrl);
+    try {
+        const { data } = await axios.get(apiUrl);
 
-    if (data.status === 200 && data.result) {
-        return data.result.id; // Yeh Ticket ID hai (processing ke liye)
-    } else {
-        console.error("Streamtape Error Response:", data);
-        throw new Error(data.msg || "Remote Upload Failed to initiate");
+        if (data.status === 200 && data.result && data.result.filecode) {
+            return data.result.filecode; // Success: FileCode mil gaya
+        } else {
+            console.error("DoodStream Error:", data);
+            throw new Error(data.msg || "Remote Upload Failed");
+        }
+    } catch (err) {
+        throw new Error(`API Request Error: ${err.message}`);
     }
 };
 
 /**
- * GET EPISODE LIST & SOURCE LINKS FROM HIANIME
+ * HIANIME DATA FETCHER
  */
 const getHiAnimeData = async (mainUrl) => {
-    const animeId = mainUrl.split('-').pop();
-    const { data: listData } = await axios.get(`https://hianime.to/ajax/v2/episode/list/${animeId}`, {
-        headers: { 
-            'X-Requested-With': 'XMLHttpRequest',
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-        }
-    });
-
-    const $ = cheerio.load(listData.html);
-    const episodes = [];
-
-    $('.ep-item').each((i, el) => {
-        episodes.push({
-            id: $(el).attr('data-id'),
-            number: parseInt($(el).attr('data-number')),
-            title: $(el).attr('title') || `Episode ${$(el).attr('data-number')}`
+    try {
+        const animeId = mainUrl.split('-').pop();
+        const { data: listData } = await axios.get(`https://hianime.to/ajax/v2/episode/list/${animeId}`, {
+            headers: { 'X-Requested-With': 'XMLHttpRequest' }
         });
-    });
 
-    return episodes;
+        const $ = cheerio.load(listData.html);
+        const episodes = [];
+
+        $('.ep-item').each((i, el) => {
+            episodes.push({
+                id: $(el).attr('data-id'),
+                number: parseInt($(el).attr('data-number')),
+                title: $(el).attr('title') || `Episode ${$(el).attr('data-number')}`
+            });
+        });
+
+        return episodes;
+    } catch (err) {
+        console.error("Error fetching HiAnime list:", err.message);
+        return [];
+    }
 };
 
 /**
- * MAIN FUNCTION: EXTRACT & SYNC
+ * MAIN LOGIC
  */
 const extractAndUpload = async (mainUrl, animeName, languageTag) => {
     try {
-        // Models ko fetch karo (Ensure models are registered)
         const Episode = mongoose.model('Episode');
         const Series = mongoose.model('Series');
 
-        console.log(`🚀 Starting Global Sync for: ${animeName} (${languageTag})`);
+        console.log(`🚀 Starting DoodStream Sync: ${animeName}`);
 
-        // 1. Series Check/Create
+        // 1. Find or Create Series
         let series = await Series.findOne({ title: new RegExp(`^${animeName}`, 'i') });
         if (!series) {
             series = await Series.create({ 
@@ -77,57 +79,57 @@ const extractAndUpload = async (mainUrl, animeName, languageTag) => {
             });
         }
 
-        // 2. Fetch Episodes from HiAnime
+        // 2. Get Episodes
         const episodes = await getHiAnimeData(mainUrl);
-        console.log(`🔍 Found ${episodes.length} episodes on source.`);
+        console.log(`🔍 Found ${episodes.length} episodes.`);
 
         for (let ep of episodes) {
             try {
-                // Pehle check karo agar ye episode already completed hai?
+                // Check if already completed
                 const existing = await Episode.findOne({ seriesId: series._id, episodeNumber: ep.number });
                 if (existing && existing.status === 'completed') {
-                    console.log(`⏭️ Skipping Ep ${ep.number} (Already exists)`);
+                    console.log(`⏭️ Skipping Ep ${ep.number} (Already Live)`);
                     continue;
                 }
 
-                // 3. Get Fresh Video Source Link
+                // 3. Get Fresh Direct Link
                 const { data: sourceData } = await axios.get(`https://hianime.to/ajax/v2/episode/sources?id=${ep.id}`);
                 const videoLink = sourceData.link;
 
                 if (!videoLink) {
-                    console.log(`⚠️ No source link found for Ep ${ep.number}`);
+                    console.log(`⚠️ No link found for Ep ${ep.number}`);
                     continue;
                 }
 
-                // 4. Send to Streamtape
-                console.log(`📡 Sending Ep ${ep.number} to Streamtape Remote Queue...`);
-                const ticketId = await addRemoteUpload(videoLink);
+                // 4. Send to DoodStream
+                console.log(`📡 Uploading Ep ${ep.number} to DoodStream...`);
+                const fileCode = await addRemoteUpload(videoLink);
 
-                // 5. Save Ticket ID to Database (Status: Processing)
+                // 5. Save as 'processing'
                 await Episode.findOneAndUpdate(
                     { seriesId: series._id, episodeNumber: ep.number },
                     { 
-                        remoteId: ticketId, 
-                        status: 'processing', // "processing" means Streamtape is still downloading it
+                        remoteId: fileCode, 
+                        status: 'processing', 
                         title: ep.title 
                     },
                     { upsert: true }
                 );
 
-                console.log(`✅ Ep ${ep.number} Queued! Ticket ID: ${ticketId}`);
+                console.log(`✅ Ep ${ep.number} Queued! FileCode: ${fileCode}`);
 
             } catch (err) {
-                console.error(`❌ Error on Ep ${ep.number}: ${err.message}`);
+                console.error(`❌ Ep ${ep.number} Error: ${err.message}`);
             }
 
-            // Streamtape API limits aur site ban se bachne ke liye 10 sec ka gap
-            await sleep(10000); 
+            // 5 Seconds Gap to be safe
+            await sleep(5000); 
         }
 
-        console.log(`🏁 Finished processing all episodes for ${animeName}`);
+        console.log(`🏁 Sync Finished for ${animeName}`);
 
     } catch (err) {
-        console.error(`💥 CRITICAL EXTRACTOR ERROR: ${err.message}`);
+        console.error(`💥 GLOBAL CRASH: ${err.message}`);
     }
 };
 
