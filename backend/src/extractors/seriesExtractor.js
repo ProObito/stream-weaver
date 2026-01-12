@@ -1,88 +1,162 @@
 const axios = require('axios');
 const cheerio = require('cheerio');
 const mongoose = require('mongoose');
+const fs = require('fs');
+const path = require('path');
+const FormData = require('form-data');
 
 const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
-// --- STREAMTAPE REMOTE UPLOAD HELPER ---
-const triggerRemoteUpload = async (remoteUrl, folderId = '') => {
-    const login = process.env.STREAMTAPE_LOGIN;
-    const key = process.env.STREAMTAPE_KEY;
-    
-    // Streamtape Remote Upload API
-    const apiUrl = `https://api.streamtape.com/remotedl/add?login=${login}&key=${key}&url=${encodeURIComponent(remoteUrl)}${folderId ? `&folder=${folderId}` : ''}`;
-    
-    const { data } = await axios.get(apiUrl);
-    if (data.status === 200 && data.result && data.result.id) {
-        return data.result.id; // Yeh Remote Ticket ID hai
-    } else {
-        throw new Error(data.msg || "Remote Upload Failed to Trigger");
+// --- RETRY LOGIC ---
+const withRetry = async (fn, retries = 3, delay = 5000) => {
+    for (let i = 0; i < retries; i++) {
+        try {
+            return await fn();
+        } catch (err) {
+            if (i === retries - 1) throw err;
+            console.log(`⚠️ Attempt ${i + 1} failed: ${err.message}. Retrying...`);
+            await sleep(delay);
+        }
     }
 };
 
-// --- GET FRESH LINK FOR SINGLE EPISODE ---
-const getFreshEpLink = async (epDataId) => {
-    const { data: src } = await axios.get(`https://hianime.to/ajax/v2/episode/sources?id=${epDataId}`);
-    return src.link || null;
+// --- DIRECT UPLOAD TO STREAMTAPE ---
+const uploadToStreamtape = async (filePath, fileName) => {
+    const login = process.env.STREAMTAPE_LOGIN;
+    const key = process.env.STREAMTAPE_KEY;
+
+    // 1. Get Fresh Upload URL
+    const { data: serverData } = await axios.get(`https://api.streamtape.com/file/ul?login=${login}&key=${key}`);
+    if (!serverData || serverData.status !== 200) throw new Error("Streamtape API Error: No Upload URL");
+
+    const uploadUrl = serverData.result.url;
+
+    // 2. Prepare Form Data
+    const form = new FormData();
+    form.append('file1', fs.createReadStream(filePath), { filename: fileName });
+
+    // 3. Post to Streamtape
+    const response = await axios.post(uploadUrl, form, {
+        headers: { ...form.getHeaders() },
+        maxContentLength: Infinity,
+        maxBodyLength: Infinity,
+        timeout: 900000 // 15 mins for large files
+    });
+
+    if (response.data && response.data.result && response.data.result.id) {
+        return response.data.result.id;
+    } else {
+        throw new Error(`Upload Failed: ${JSON.stringify(response.data)}`);
+    }
 };
 
-// --- MAIN EXTRACTOR ---
+// --- DOWNLOADER (SERVER SIDE) ---
+const downloadVideo = async (url, dest) => {
+    const response = await axios({
+        url,
+        method: 'GET',
+        responseType: 'stream',
+        headers: { 'User-Agent': 'Mozilla/5.0' }
+    });
+
+    const writer = fs.createWriteStream(dest);
+    response.data.pipe(writer);
+
+    return new Promise((resolve, reject) => {
+        writer.on('finish', () => {
+            const stats = fs.statSync(dest);
+            if (stats.size < 1024) reject(new Error("File too small/invalid download"));
+            else resolve();
+        });
+        writer.on('error', reject);
+    });
+};
+
+// --- HIANIME SCRAPER ---
+const getHiAnimeData = async (mainUrl) => {
+    const animeId = mainUrl.split('-').pop();
+    const { data } = await axios.get(`https://hianime.to/ajax/v2/episode/list/${animeId}`, {
+        headers: { 'X-Requested-With': 'XMLHttpRequest' }
+    });
+    const $ = cheerio.load(data.html);
+    const eps = [];
+    $('.ep-item').each((i, el) => {
+        eps.push({
+            id: $(el).attr('data-id'),
+            number: parseInt($(el).attr('data-number')),
+            title: $(el).attr('title') || `Episode ${$(el).attr('data-number')}`
+        });
+    });
+    return eps;
+};
+
+// --- MAIN CONTROLLER ---
 const extractAndUpload = async (mainUrl, animeName, languageTag) => {
     try {
         const Episode = mongoose.model('Episode');
         const Series = mongoose.model('Series');
-        
-        console.log(`📡 Targeting: ${animeName}`);
+
+        console.log(`📡 Processing: ${animeName} (${languageTag})`);
 
         let series = await Series.findOne({ title: `${animeName} (${languageTag})` });
         if (!series) {
             series = await Series.create({ title: `${animeName} (${languageTag})`, sourceUrl: mainUrl, language: languageTag });
         }
 
-        // 1. Get Episode List (Only IDs and Numbers)
-        const animeId = mainUrl.split('-').pop();
-        const { data: listData } = await axios.get(`https://hianime.to/ajax/v2/episode/list/${animeId}`, {
-            headers: { 'X-Requested-With': 'XMLHttpRequest' }
-        });
-        const $ = cheerio.load(listData.html);
-        const items = $('.ep-item').get();
+        const episodes = await getHiAnimeData(mainUrl);
+        console.log(`🔍 Found ${episodes.length} episodes.`);
 
-        console.log(`🔍 Found ${items.length} episodes. Starting Remote Sync...`);
-
-        for (const el of items) {
-            const epId = $(el).attr('data-id');
-            const num = parseInt($(el).attr('data-number'));
+        for (let ep of episodes) {
+            // Skip check hata diya hai taaki "Force Upload" ho
+            const safeName = `${animeName.replace(/\s+/g, '_')}_Ep${ep.number}.mp4`;
+            const filePath = path.join('/tmp', `temp_${Date.now()}.mp4`);
 
             try {
-                // 2. Get FRESH link right now (Expire hone se pehle)
-                const freshLink = await getFreshEpLink(epId);
-                
-                if (freshLink) {
-                    console.log(`🚀 Triggering Remote for Ep ${num}...`);
-                    const ticketId = await triggerRemoteUpload(freshLink);
+                // 1. Get Fresh Source Link
+                const { data: sourceData } = await axios.get(`https://hianime.to/ajax/v2/episode/sources?id=${ep.id}`);
+                const videoLink = sourceData.link;
 
-                    // 3. Save as "processing" in DB
-                    await Episode.findOneAndUpdate(
-                        { seriesId: series._id, episodeNumber: num },
-                        { 
-                            remoteId: ticketId, // Ticket ID temporarily
-                            status: 'processing',
-                            title: $(el).attr('title') || `Episode ${num}`
-                        },
-                        { upsert: true }
-                    );
-                    console.log(`✅ Ep ${num} Queued (Ticket: ${ticketId})`);
+                if (!videoLink) {
+                    console.log(`❌ No link for Ep ${ep.number}`);
+                    continue;
                 }
+
+                // 2. Download to Server
+                console.log(`📥 Downloading Ep ${ep.number}...`);
+                await withRetry(() => downloadVideo(videoLink, filePath));
+
+                // 3. Upload to Streamtape
+                console.log(`📤 Uploading Ep ${ep.number}...`);
+                const streamtapeId = await withRetry(() => uploadToStreamtape(filePath, safeName));
+
+                // 4. Update Database
+                await Episode.findOneAndUpdate(
+                    { seriesId: series._id, episodeNumber: ep.number },
+                    { 
+                        remoteId: streamtapeId, 
+                        status: 'completed', 
+                        title: ep.title 
+                    },
+                    { upsert: true }
+                );
+
+                console.log(`✅ Ep ${ep.number} Success: ${streamtapeId}`);
+
             } catch (err) {
-                console.error(`❌ Ep ${num} Error: ${err.message}`);
+                console.error(`❌ Failed Ep ${ep.number}: ${err.message}`);
+            } finally {
+                // Har episode ke baad file delete karo taaki storage na bhare
+                if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
             }
 
-            // 15 seconds gap taaki Streamtape API spam na ho
-            await sleep(15000);
+            // Sleep taaki IP ban na ho
+            await sleep(5000);
         }
 
+        console.log(`🏁 All work done for ${animeName}`);
+
     } catch (err) {
-        console.error(`❌ Global Error: ${err.message}`);
+        console.error(`💥 GLOBAL CRASH: ${err.message}`);
     }
 };
 
