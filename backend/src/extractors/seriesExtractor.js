@@ -5,32 +5,60 @@ const { processEpisodes } = require('./videoExtractor');
 
 const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
-// GogoAnime se direct stream link nikalne ka function
-const getGogoDirectLink = async (animeTitle, epNum) => {
-    try {
-        // Anime title ko URL friendly banao
-        const formattedTitle = animeTitle.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '');
-        const gogoUrl = `https://anitaku.pe/${formattedTitle}-episode-${epNum}`;
-        
-        const { data } = await axios.get(gogoUrl);
-        const $ = cheerio.load(data);
-        
-        // Streamtape ya asali file link uthao (Gogo ke servers list se)
-        const directLink = $('.streamsb a').attr('data-video') || $('.standard a').attr('data-video');
-        return directLink || null;
-    } catch (err) {
-        return null;
+// --- SOURCE HELPERS ---
+
+// 1. HiAnime Logic (Direct Link Extraction)
+const getHiAnimeData = async (mainUrl) => {
+    const animeId = mainUrl.split('-').pop();
+    const { data } = await axios.get(`https://hianime.to/ajax/v2/episode/list/${animeId}`, {
+        headers: { 'X-Requested-With': 'XMLHttpRequest' }
+    });
+    const $ = cheerio.load(data.html);
+    const eps = [];
+    
+    const items = $('.ep-item').get();
+    for (const el of items) {
+        const id = $(el).attr('data-id');
+        const num = parseInt($(el).attr('data-number'));
+        // Har episode ka asali source link nikalna padega
+        try {
+            const { data: src } = await axios.get(`https://hianime.to/ajax/v2/episode/sources?id=${id}`);
+            eps.push({ episode: num, link: src.link, title: $(el).attr('title') || `Episode ${num}` });
+        } catch (e) { console.log(`Skip Ep ${num} due to link error`); }
     }
+    return eps;
 };
+
+// 2. TPXSub & DesiDub Logic (Anchor Link Extraction)
+const getGeneralSourceData = async (url) => {
+    try {
+        const { data } = await axios.get(url, { headers: { 'User-Agent': 'Mozilla/5.0' } });
+        const $ = cheerio.load(data);
+        const eps = [];
+        
+        // Targetting links that look like video hosts
+        $('.entry-content a, .content a').each((i, el) => {
+            const href = $(el).attr('href');
+            if (href && (href.includes('streamtape') || href.includes('drive.google') || href.includes('mega.nz'))) {
+                eps.push({
+                    episode: i + 1,
+                    link: href,
+                    title: $(el).text().trim() || `Episode ${i + 1}`
+                });
+            }
+        });
+        return eps;
+    } catch (e) { return []; }
+};
+
+// --- MAIN FUNCTION ---
 
 const extractAndUpload = async (mainUrl, animeName, languageTag) => {
     try {
         const Series = mongoose.model('Series');
-        const Episode = mongoose.model('Episode');
+        console.log(`📡 Processing: ${animeName} (${languageTag})`);
 
-        console.log(`📡 Processing: ${animeName}`);
-
-        // 1. Series dhoondo ya banao
+        // Series setup
         let series = await Series.findOne({ title: `${animeName} (${languageTag})` });
         if (!series) {
             series = await Series.create({
@@ -41,45 +69,47 @@ const extractAndUpload = async (mainUrl, animeName, languageTag) => {
             });
         }
 
-        // HiAnime se episode list uthao (Numbers ke liye)
-        const animeId = mainUrl.split('-').pop();
-        const { data: ajaxRes } = await axios.get(`https://hianime.to/ajax/v2/episode/list/${animeId}`, {
-            headers: { 'X-Requested-With': 'XMLHttpRequest' }
-        });
+        let episodeList = [];
 
-        const $ = cheerio.load(ajaxRes.html);
-        const epElements = $('.ep-item');
+        // Determine Source
+        if (mainUrl.includes('hianime.to')) {
+            episodeList = await getHiAnimeData(mainUrl);
+        } else {
+            episodeList = await getGeneralSourceData(mainUrl);
+        }
 
-        console.log(`🔍 Found ${epElements.length} episodes. Starting Force Upload...`);
+        if (episodeList.length === 0) {
+            console.log(`❌ No episodes found for ${animeName}`);
+            return;
+        }
 
-        for (let i = 0; i < epElements.length; i++) {
-            const epNum = parseInt($(epElements[i]).attr('data-number'));
+        console.log(`🔍 Total ${episodeList.length} episodes ready for processing.`);
 
-            // CHECK: Kya ye episode pehle se Streamtape pe "ready" hai?
-            const existingEp = await Episode.findOne({ seriesId: series._id, episodeNumber: epNum });
+        // Loop and Force Upload
+        for (let i = 0; i < episodeList.length; i++) {
+            const ep = episodeList[i];
+
+            // FORCE MODE: Hum database check skip kar rahe hain taaki Streamtape pe dobara jaye
+            await processEpisodes(series, [{
+                episode: ep.episode,
+                link: ep.link,
+                title: ep.title,
+                season: 1
+            }]);
+
+            console.log(`✅ [${i+1}/${episodeList.length}] Ep ${ep.episode} triggered for ${animeName}`);
             
-            // Agar episode nahi hai, ya failed hai, ya remoteId khali hai -> TOH RE-UPLOAD KARO
-            if (!existingEp || existingEp.status === 'failed' || !existingEp.remoteId) {
-                
-                const finalLink = await getGogoDirectLink(animeName, epNum);
-
-                if (finalLink) {
-                    await processEpisodes(series, [{
-                        episode: epNum,
-                        link: finalLink,
-                        title: `Episode ${epNum}`,
-                        season: 1
-                    }]);
-
-                    console.log(`✅ [Re-uploading] Ep ${epNum} Sent to Streamtape.`);
-                    await sleep(85000); // Streamtape Limit Protection
-                }
-            } else {
-                console.log(`⏭️ Ep ${epNum} already exists, skipping...`);
+            // 85 seconds delay to stay under Streamtape's hourly limit
+            if (i < episodeList.length - 1) {
+                console.log(`⏳ Waiting 85s for next episode...`);
+                await sleep(85000);
             }
         }
+
+        console.log(`🏁 All episodes for ${animeName} have been sent to queue.`);
+
     } catch (err) {
-        console.error(`❌ Extractor Error: ${err.message}`);
+        console.error(`❌ Extractor Crash: ${err.message}`);
     }
 };
 
