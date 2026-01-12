@@ -1,113 +1,109 @@
 const axios = require('axios');
 const cheerio = require('cheerio');
 const mongoose = require('mongoose');
-const { processEpisodes } = require('./videoExtractor');
+const fs = require('fs');
+const path = require('path');
+const FormData = require('form-data');
 
 const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
-// --- SOURCE HELPERS ---
-
-// 1. HiAnime Logic (Direct Link Extraction)
-const getHiAnimeData = async (mainUrl) => {
-    const animeId = mainUrl.split('-').pop();
-    const { data } = await axios.get(`https://hianime.to/ajax/v2/episode/list/${animeId}`, {
-        headers: { 'X-Requested-With': 'XMLHttpRequest' }
-    });
-    const $ = cheerio.load(data.html);
-    const eps = [];
-    
-    const items = $('.ep-item').get();
-    for (const el of items) {
-        const id = $(el).attr('data-id');
-        const num = parseInt($(el).attr('data-number'));
-        // Har episode ka asali source link nikalna padega
+// --- RETRY WRAPPER ---
+const withRetry = async (fn, retries = 3, delay = 5000) => {
+    for (let i = 0; i < retries; i++) {
         try {
-            const { data: src } = await axios.get(`https://hianime.to/ajax/v2/episode/sources?id=${id}`);
-            eps.push({ episode: num, link: src.link, title: $(el).attr('title') || `Episode ${num}` });
-        } catch (e) { console.log(`Skip Ep ${num} due to link error`); }
+            return await fn();
+        } catch (err) {
+            if (i === retries - 1) throw err;
+            console.log(`⚠️ Attempt ${i + 1} failed. Retrying in ${delay / 1000}s...`);
+            await sleep(delay);
+        }
     }
-    return eps;
 };
 
-// 2. TPXSub & DesiDub Logic (Anchor Link Extraction)
-const getGeneralSourceData = async (url) => {
-    try {
-        const { data } = await axios.get(url, { headers: { 'User-Agent': 'Mozilla/5.0' } });
-        const $ = cheerio.load(data);
-        const eps = [];
-        
-        // Targetting links that look like video hosts
-        $('.entry-content a, .content a').each((i, el) => {
-            const href = $(el).attr('href');
-            if (href && (href.includes('streamtape') || href.includes('drive.google') || href.includes('mega.nz'))) {
-                eps.push({
-                    episode: i + 1,
-                    link: href,
-                    title: $(el).text().trim() || `Episode ${i + 1}`
-                });
-            }
-        });
-        return eps;
-    } catch (e) { return []; }
+// --- STREAMTAPE UPLOAD ---
+const uploadToStreamtape = async (filePath) => {
+    const login = process.env.STREAMTAPE_LOGIN;
+    const key = process.env.STREAMTAPE_KEY;
+    
+    // 1. Get Upload URL
+    const { data: serverData } = await axios.get(`https://api.streamtape.com/file/ul?login=${login}&key=${key}`);
+    if (serverData.status !== 200) throw new Error("Streamtape API Error");
+    
+    // 2. Upload with Form Data
+    const form = new FormData();
+    form.append('file1', fs.createReadStream(filePath));
+    
+    const { data: uploadResult } = await axios.post(serverData.result.url, form, {
+        headers: form.getHeaders(),
+        maxContentLength: Infinity,
+        maxBodyLength: Infinity
+    });
+    
+    return uploadResult.result.id;
 };
 
-// --- MAIN FUNCTION ---
+// --- DOWNLOADER ---
+const downloadVideo = async (url, dest) => {
+    const response = await axios({
+        url,
+        method: 'GET',
+        responseType: 'stream',
+        timeout: 300000 // 5 Minute timeout
+    });
+    const writer = fs.createWriteStream(dest);
+    response.data.pipe(writer);
+    return new Promise((resolve, reject) => {
+        writer.on('finish', resolve);
+        writer.on('error', reject);
+    });
+};
 
+// --- MAIN EXTRACTOR ---
 const extractAndUpload = async (mainUrl, animeName, languageTag) => {
     try {
+        const Episode = mongoose.model('Episode');
         const Series = mongoose.model('Series');
-        console.log(`📡 Processing: ${animeName} (${languageTag})`);
+        
+        console.log(`🚀 Starting Local Sync for: ${animeName}`);
+        let series = await Series.findOne({ title: new RegExp(animeName, 'i') });
 
-        // Series setup
-        let series = await Series.findOne({ title: `${animeName} (${languageTag})` });
-        if (!series) {
-            series = await Series.create({
-                title: `${animeName} (${languageTag})`,
-                sourceUrl: mainUrl,
-                language: languageTag,
-                isPublished: false
-            });
-        }
+        // Yahan episodeList fetch karne ka logic (HiAnime/Gogo/TPX) wahi purana use karein
+        // Let's assume 'episodeList' is populated...
 
-        let episodeList = [];
+        for (let ep of episodeList) {
+            const fileName = `${animeName.replace(/\s+/g, '_')}_Ep${ep.episode}.mp4`;
+            const filePath = path.join(__dirname, fileName);
 
-        // Determine Source
-        if (mainUrl.includes('hianime.to')) {
-            episodeList = await getHiAnimeData(mainUrl);
-        } else {
-            episodeList = await getGeneralSourceData(mainUrl);
-        }
+            try {
+                // STEP 1: DOWNLOAD WITH RETRY
+                console.log(`📥 Downloading: ${fileName}`);
+                await withRetry(() => downloadVideo(ep.link, filePath));
 
-        if (episodeList.length === 0) {
-            console.log(`❌ No episodes found for ${animeName}`);
-            return;
-        }
+                // STEP 2: UPLOAD WITH RETRY
+                console.log(`📤 Uploading to Streamtape: ${fileName}`);
+                const videoId = await withRetry(() => uploadToStreamtape(filePath));
 
-        console.log(`🔍 Total ${episodeList.length} episodes ready for processing.`);
+                if (videoId) {
+                    await Episode.findOneAndUpdate(
+                        { seriesId: series._id, episodeNumber: ep.episode },
+                        { remoteId: videoId, status: 'completed' },
+                        { upsert: true }
+                    );
+                    console.log(`✅ Success: Ep ${ep.episode} (ID: ${videoId})`);
+                }
 
-        // Loop and Force Upload
-        for (let i = 0; i < episodeList.length; i++) {
-            const ep = episodeList[i];
-
-            // FORCE MODE: Hum database check skip kar rahe hain taaki Streamtape pe dobara jaye
-            await processEpisodes(series, [{
-                episode: ep.episode,
-                link: ep.link,
-                title: ep.title,
-                season: 1
-            }]);
-
-            console.log(`✅ [${i+1}/${episodeList.length}] Ep ${ep.episode} triggered for ${animeName}`);
-            
-            // 85 seconds delay to stay under Streamtape's hourly limit
-            if (i < episodeList.length - 1) {
-                console.log(`⏳ Waiting 85s for next episode...`);
-                await sleep(85000);
+            } catch (err) {
+                console.error(`❌ Permanent Failure for Ep ${ep.episode}: ${err.message}`);
+            } finally {
+                // STEP 3: DELETE LOCAL FILE IMMEDIATELY
+                if (fs.existsSync(filePath)) {
+                    fs.unlinkSync(filePath);
+                    console.log(`🗑️ Storage Cleared: ${fileName}`);
+                }
             }
+            
+            await sleep(2000); // Small rest to avoid CPU spike
         }
-
-        console.log(`🏁 All episodes for ${animeName} have been sent to queue.`);
-
     } catch (err) {
         console.error(`❌ Extractor Crash: ${err.message}`);
     }
