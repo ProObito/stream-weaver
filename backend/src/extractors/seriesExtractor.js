@@ -2,15 +2,15 @@ const axios = require('axios');
 const mongoose = require('mongoose');
 
 // --- CONFIGURATION ---
-// Tumhara hosted API URL
+// Tera Vercel API URL
 const API_BASE_URL = "https://hianimeapi-ochre.vercel.app"; 
 
-// Helper: Delay to be safe
+// Helper: Delay to prevent rate limits or IP bans
 const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
 /**
  * 🚀 1. DOODSTREAM REMOTE UPLOAD
- * Send the direct .m3u8 link to DoodStream
+ * Send the direct video link to DoodStream
  */
 const addRemoteUpload = async (videoUrl) => {
     const key = process.env.DOODSTREAM_KEY;
@@ -31,44 +31,49 @@ const addRemoteUpload = async (videoUrl) => {
 };
 
 /**
- * 🔗 2. GET DIRECT VIDEO LINK (Using Your Vercel API)
- * No more scraping/decrypting locally. We ask the API.
+ * 🔗 2. GET DIRECT VIDEO LINK (From Vercel API)
+ * Route: /hianime/watch?episodeId=...
  */
 const getLinkFromApi = async (episodeId) => {
     try {
-        // Endpoint: /anime/hianime/watch?episodeId=...&server=vidstreaming
-        const apiUrl = `${API_BASE_URL}/anime/hianime/watch?episodeId=${episodeId}&server=vidstreaming`;
+        const apiUrl = `${API_BASE_URL}/hianime/watch?episodeId=${episodeId}`;
         
         const { data } = await axios.get(apiUrl);
 
-        // API Response looks like: { sources: [{ url: "...", isM3U8: true }, ...] }
+        // API Response: { sources: [{ url: "...", quality: "default", isM3U8: true }] }
         if (data && data.sources && data.sources.length > 0) {
-            // Prefer the "default" or first source
-            return data.sources[0].url; 
+            // Find the best source (usually 'auto' or 'default')
+            const source = data.sources.find(s => s.quality === 'auto') || 
+                           data.sources.find(s => s.quality === 'default') || 
+                           data.sources[0];
+            return source.url; 
         }
         return null;
 
     } catch (err) {
-        console.error(`API Error for ${episodeId}:`, err.message);
+        console.error(`API Watch Error (${episodeId}):`, err.message);
         return null;
     }
 };
 
 /**
- * 📋 3. GET EPISODE LIST (Using Your Vercel API)
+ * 📋 3. GET EPISODE LIST (From Vercel API)
+ * Route: /hianime/info?id=...
  */
 const getEpisodesFromApi = async (animeId) => {
     try {
-        // Endpoint: /anime/hianime/episodes/{id}
-        const apiUrl = `${API_BASE_URL}/anime/hianime/episodes/${animeId}`;
+        const apiUrl = `${API_BASE_URL}/hianime/info?id=${animeId}`;
         const { data } = await axios.get(apiUrl);
         
+        // Response format check
         if (data && data.episodes) {
-            return data.episodes; // Returns array [{ episodeId: "...", number: 1, title: "..." }]
+            return data.episodes; 
+        } else if (data && data.anime && data.anime.episodes) {
+            return data.anime.episodes;
         }
         return [];
     } catch (err) {
-        console.error("Episode List API Error:", err.message);
+        console.error(`Episode List Error (${animeId}):`, err.message);
         return [];
     }
 };
@@ -81,14 +86,23 @@ const extractAndUpload = async (mainUrl, animeName, languageTag) => {
         const Episode = mongoose.model('Episode');
         const Series = mongoose.model('Series');
 
-        console.log(`🚀 Starting Sync via Vercel API: ${animeName}`);
+        console.log(`🚀 Starting Sync via API: ${animeName}`);
 
-        // Extract ID from URL (e.g., https://hianime.to/one-piece-100 -> one-piece-100)
-        // Split by '/' and take last part, remove query params if any
-        const animeId = mainUrl.split('/').pop().split('?')[0];
+        // --- ID EXTRACTION LOGIC ---
+        // URL Example 1: https://hianime.to/one-piece-100
+        // URL Example 2: https://hianime.to/watch/one-piece-100?ep=123
+        let animeId = '';
+
+        if (mainUrl.includes('/watch/')) {
+            animeId = mainUrl.split('/watch/')[1].split('?')[0];
+        } else {
+            animeId = mainUrl.split('/').pop().split('?')[0];
+        }
+
+        console.log(`ℹ️ Extracted ID: ${animeId}`);
 
         if (!animeId) {
-            console.error("❌ Invalid HiAnime URL provided.");
+            console.error("❌ Could not extract Anime ID from URL.");
             return;
         }
 
@@ -103,14 +117,14 @@ const extractAndUpload = async (mainUrl, animeName, languageTag) => {
         console.log(`🔍 Found ${episodes.length} episodes via API.`);
 
         if (episodes.length === 0) {
-            console.log("⚠️ No episodes found. Check if Anime ID is correct.");
+            console.log("⚠️ No episodes found. Logs check karo ki API URL sahi hai ya Anime ID.");
             return;
         }
 
         for (let ep of episodes) {
             try {
-                // Ensure episode number is integer
-                const epNum = parseInt(ep.number);
+                // Determine Episode Number
+                const epNum = ep.number; 
 
                 // Check if exists
                 const existing = await Episode.findOne({ seriesId: series._id, episodeNumber: epNum });
@@ -119,7 +133,8 @@ const extractAndUpload = async (mainUrl, animeName, languageTag) => {
                     continue;
                 }
 
-                // STEP A: Get Direct Link from API
+                // STEP A: Get Link from API
+                // Note: API returns 'episodeId' inside the episode object
                 const directLink = await getLinkFromApi(ep.episodeId);
                 
                 if (directLink) {
@@ -133,7 +148,7 @@ const extractAndUpload = async (mainUrl, animeName, languageTag) => {
                             { 
                                 remoteId: fileCode, 
                                 status: 'processing', 
-                                title: ep.title || `Episode ${epNum}`
+                                title: ep.title 
                             },
                             { upsert: true }
                         );
@@ -142,17 +157,16 @@ const extractAndUpload = async (mainUrl, animeName, languageTag) => {
                         console.log(`❌ DoodStream Failed for Ep ${epNum}`);
                     }
                 } else {
-                    console.log(`❌ API could not fetch link for Ep ${epNum}`);
+                    console.log(`❌ No Link found for Ep ${epNum} (API return null)`);
                 }
 
             } catch (err) {
-                console.error(`❌ Ep ${ep.number} Error: ${err.message}`);
+                console.error(`❌ Ep Error: ${err.message}`);
             }
-
-            // API calls are fast, but 2s gap is good practice
+            
+            // 2 Second delay is enough for API
             await sleep(2000); 
         }
-
         console.log(`🏁 Sync Finished for ${animeName}`);
 
     } catch (err) {
