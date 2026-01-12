@@ -2,7 +2,7 @@ const axios = require('axios');
 const mongoose = require('mongoose');
 
 // --- CONFIGURATION ---
-const API_BASE_URL = "https://hianimeapi-ochre.vercel.app"; 
+const API_BASE_URL = "https://hianimeapi-1vww.onrender.com/"; 
 
 // Helper: Delay function
 const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
