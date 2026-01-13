@@ -6,11 +6,11 @@ const mongoose = require('mongoose');
 // ==========================================
 const API_BASE_URL = "https://hianime-api-seven-teal.vercel.app"; 
 const START_PAGE = 1;        
-const MAX_PAGES = 500;       
+const MAX_PAGES = 200;       // Recently Updated mein 200 pages bohot hote hain
 const MIN_YEAR = 2010;       
 const RETRY_LIMIT = 3;       
 
-// 🔒 GLOBAL LOCK (To prevent multiple clicks/starts)
+// 🔒 GLOBAL LOCK (Fixes Multiple Start Issue)
 let isCrawling = false;
 
 // ==========================================
@@ -25,6 +25,9 @@ function normalizeData(data, type) {
         if (data.data?.animes) return data.data.animes;
         if (data.animes) return data.animes;
         if (data.results) return data.results;
+        // Handle Home Page Structure
+        if (data.data?.trendingAnimes) return data.data.trendingAnimes;
+        if (data.data?.latestEpisodeAnimes) return data.data.latestEpisodeAnimes;
     }
     if (type === 'info') { 
         if (data.data?.anime) return data.data.anime;
@@ -59,11 +62,12 @@ const extractYear = (info) => {
 
 // 🔍 Find Working List Endpoint
 const determineListEndpoint = async () => {
+    // Priority List: Recently Updated is best for "New Content"
     const candidates = [
-        "/hianime/most-popular",  // Standard
-        "/hianime/trending",      // Fallback 1
-        "/hianime/popular",       // Fallback 2
-        "/anime/most-popular"     // Legacy
+        "/hianime/recently-updated", // Best for automated scraping
+        "/hianime/most-popular",     // Often broken on some forks
+        "/hianime/trending",         
+        "/hianime/top-airing"
     ];
 
     console.log("🔍 Detecting valid API endpoint...");
@@ -71,31 +75,51 @@ const determineListEndpoint = async () => {
     for (const path of candidates) {
         try {
             const url = `${API_BASE_URL}${path}?page=1`;
+            // console.log(`Testing: ${url}`);
             const { data } = await axios.get(url);
-            if (data && (data.animes || data.data?.animes || data.results)) {
+            
+            // Check if response has array of animes
+            const list = normalizeData(data, 'list');
+            if (list && list.length > 0) {
                 console.log(`✅ Valid Endpoint Found: ${path}`);
-                return path; // Working path mil gaya
+                return path; 
             }
         } catch (e) {
-            // console.log(`❌ Failed: ${path}`);
+            // console.log(`❌ Failed: ${path} (${e.message})`);
         }
     }
+    
+    // Last Resort: Home Page (No pagination usually, but gets data)
+    try {
+        const url = `${API_BASE_URL}/hianime/home`;
+        const { data } = await axios.get(url);
+        if (data.data?.trendingAnimes) {
+            console.log(`✅ Fallback Endpoint Found: /hianime/home`);
+            return '/hianime/home';
+        }
+    } catch(e) {}
+
     return null;
 };
 
 // 1. Fetch Anime List
 const fetchAnimeList = async (endpoint, page) => {
-    const url = `${API_BASE_URL}${endpoint}?page=${page}`;
+    let url = `${API_BASE_URL}${endpoint}`;
+    
+    // Home endpoint doesn't support pagination usually
+    if (endpoint !== '/hianime/home') {
+        url += `?page=${page}`;
+    }
+
     try {
-        console.log(`\n📑 [PAGE ${page}] Fetching list...`);
+        console.log(`\n📑 [PAGE ${page}] Fetching list from ${endpoint}...`);
         const { data } = await axios.get(url);
         return normalizeData(data, 'list') || [];
     } catch (e) {
         if (e.response && e.response.status === 404) {
-            console.error(`❌ Page ${page} Not Found (End of List?)`);
-            return null; // Return null to signal stop
+            console.error(`❌ Page ${page} Not Found.`);
+            return null; 
         }
-        console.error(`❌ Error fetching page ${page}: ${e.message}`);
         return [];
     }
 };
@@ -111,11 +135,20 @@ const getAnimeDetails = async (animeId) => {
 
 // 3. Fetch Episodes
 const getEpisodesFromApi = async (animeId) => {
-    const url = `${API_BASE_URL}/hianime/anime/episodes/${animeId}`;
-    try {
-        const { data } = await axios.get(url);
-        return normalizeData(data, 'episodes') || [];
-    } catch (e) { return []; }
+    // Try multiple episode endpoints
+    const routes = [
+        `${API_BASE_URL}/hianime/anime/episodes/${animeId}`,
+        `${API_BASE_URL}/hianime/episodes/${animeId}`
+    ];
+
+    for (const url of routes) {
+        try {
+            const { data } = await axios.get(url);
+            const eps = normalizeData(data, 'episodes');
+            if (eps && eps.length > 0) return eps;
+        } catch(e) {}
+    }
+    return [];
 };
 
 // 4. Fetch Video Link
@@ -174,6 +207,7 @@ const syncSingleSeason = async (id, title) => {
 
     const episodes = await getEpisodesFromApi(id);
     if (!episodes || episodes.length === 0) {
+        // console.log(`⚠️ No episodes found for ${title}`);
         return;
     }
 
@@ -226,7 +260,7 @@ const processAnimeFilter = async (anime) => {
     if (info.seasons && info.seasons.length > 0) {
         for (let season of info.seasons) {
             await syncSingleSeason(season.id, season.name || season.title);
-            await sleep(2000);
+            await sleep(3000);
         }
     } else {
         await syncSingleSeason(id, title);
@@ -243,25 +277,34 @@ const extractAndUpload = async (mainUrl, animeName, languageTag) => {
         return;
     }
 
-    isCrawling = true; // Lock laga diya
+    isCrawling = true; 
 
     try {
-        console.log(`\n🚀 INITIALIZING CRAWLER...`);
+        console.log(`\n🚀 INITIALIZING HI-ANIME CRAWLER...`);
         
         // Step 1: Find Working Endpoint
         const workingEndpoint = await determineListEndpoint();
         if (!workingEndpoint) {
-            console.error("❌ CRITICAL: No working API endpoint found. Check API URL.");
-            isCrawling = false; // Release lock
+            console.error("❌ CRITICAL: No working API endpoint found on HiAnime API.");
+            console.error("👉 Please verify the API URL in Config.");
+            isCrawling = false; 
             return;
         }
 
-        console.log(`🎯 Target: Pages ${START_PAGE} to ${MAX_PAGES} via ${workingEndpoint}`);
+        console.log(`🎯 Using Endpoint: ${workingEndpoint}`);
 
         for (let page = START_PAGE; page <= MAX_PAGES; page++) {
             const animeList = await fetchAnimeList(workingEndpoint, page);
             
-            // 🛑 Agar Page 1 pe hi null/empty aaya, toh RUK JAO
+            // Special handler for Home endpoint (No pagination)
+            if (workingEndpoint === '/hianime/home') {
+                if (animeList && animeList.length > 0) {
+                    console.log(`📦 Home Page: Found ${animeList.length} Animes.`);
+                    for (let anime of animeList) await processAnimeFilter(anime);
+                }
+                break; // Home has only 1 page
+            }
+
             if (!animeList || animeList.length === 0) {
                 console.log(`⚠️ Data ended at Page ${page}. Stopping.`);
                 break;
@@ -275,12 +318,12 @@ const extractAndUpload = async (mainUrl, animeName, languageTag) => {
             }
         }
         
-        console.log("\n🎉 MISSION ACCOMPLISHED!");
+        console.log("\n🎉 HI-ANIME SYNC COMPLETE!");
 
     } catch (err) {
         console.error(`💥 CRASH: ${err.message}`);
     } finally {
-        isCrawling = false; // Lock hata diya (chahe success ho ya fail)
+        isCrawling = false; 
         console.log("🔓 Crawler Lock Released.");
     }
 };
