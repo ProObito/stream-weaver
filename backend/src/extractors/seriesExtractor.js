@@ -4,16 +4,17 @@ const fs = require('fs');
 const path = require('path');
 const { exec } = require('child_process');
 const FormData = require('form-data');
+const rimraf = require('rimraf'); // Ensure npm install rimraf
 
 // ==========================================
 // ⚙️ SYSTEM CONFIGURATION
 // ==========================================
 const API_BASE_URL = "https://hianime-api-seven-teal.vercel.app"; 
 const MIN_YEAR = 2010;             
-const MAX_PAGES_PER_LETTER = 10;   
+const MAX_PAGES_PER_LETTER = 5;    // Keep low to prevent ban
 const RETRY_LIMIT = 3;             
 const DELAY_BETWEEN_EPS = 3000;    
-const DELAY_BETWEEN_ANIMES = 5000; 
+const TEMP_DIR = path.join(__dirname, 'temp_downloads');
 
 // Crawl Order: 0-9 then A-Z
 const SEARCH_KEYWORDS = "0123456789abcdefghijklmnopqrstuvwxyz".split(""); 
@@ -21,56 +22,61 @@ const SEARCH_KEYWORDS = "0123456789abcdefghijklmnopqrstuvwxyz".split("");
 let isCrawling = false;
 
 // ==========================================
-// 🛠️ FFMPEG & UPLOAD HANDLERS (THE REAL FIX)
+// 🧹 CLEANUP & SETUP (CRITICAL FIX)
 // ==========================================
+
+// Server start hote hi purani zombie files uda do
+const initTempDir = () => {
+    if (fs.existsSync(TEMP_DIR)) {
+        console.log("🧹 Cleaning up old temp files...");
+        fs.rmSync(TEMP_DIR, { recursive: true, force: true });
+    }
+    fs.mkdirSync(TEMP_DIR);
+};
 
 const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
-// 1. Download & Convert m3u8 to MP4 (Stream Copy - Fast)
+// ==========================================
+// 🛠️ FFMPEG & UPLOAD HANDLERS
+// ==========================================
+
 const downloadM3U8 = (m3u8Url, filename) => {
     return new Promise((resolve, reject) => {
-        const outputPath = path.join(__dirname, 'temp', filename);
+        const outputPath = path.join(TEMP_DIR, filename);
         
-        // Ensure temp folder exists
-        if (!fs.existsSync(path.join(__dirname, 'temp'))) {
-            fs.mkdirSync(path.join(__dirname, 'temp'));
-        }
-
-        console.log(`⬇️ Downloading Stream: ${filename}...`);
+        console.log(`⬇️ Stream Start: ${filename}`);
         
-        // FFmpeg command: -c copy makes it super fast (no re-encoding)
-        const cmd = `ffmpeg -i "${m3u8Url}" -c copy -bsf:a aac_adtstoasc "${outputPath}" -y`;
+        // Timeout protection: 10 mins max per file
+        const cmd = `ffmpeg -i "${m3u8Url}" -c copy -bsf:a aac_adtstoasc "${outputPath}" -y -hide_banner -loglevel error`;
 
-        exec(cmd, (error, stdout, stderr) => {
+        exec(cmd, { timeout: 600000 }, (error, stdout, stderr) => {
             if (error) {
-                console.error(`❌ FFmpeg Error: ${error.message}`);
+                console.error(`❌ FFmpeg Fail: ${error.message}`);
+                // Agar corrupt file ban gayi hai toh uda do
+                if (fs.existsSync(outputPath)) fs.unlinkSync(outputPath);
                 reject(error);
             } else {
-                console.log(`✅ Download Complete: ${filename}`);
                 resolve(outputPath);
             }
         });
     });
 };
 
-// 2. Upload Local File to DoodStream
 const uploadLocalFile = async (filePath) => {
     const key = process.env.DOODSTREAM_KEY;
     if (!key) return null;
 
     try {
-        // Step A: Get Upload Server URL
         const serverReq = await axios.get(`https://doodapi.com/api/upload/server?key=${key}`);
         const uploadUrl = serverReq.data?.result;
 
-        if (!uploadUrl) throw new Error("No upload server found");
+        if (!uploadUrl) throw new Error("No DoodStream upload server");
 
-        // Step B: Upload File
         const form = new FormData();
         form.append('api_key', key);
         form.append('file', fs.createReadStream(filePath));
 
-        console.log(`⬆️ Uploading to DoodStream...`);
+        console.log(`⬆️ Uploading to Dood...`);
         
         const uploadRes = await axios.post(uploadUrl, form, {
             headers: form.getHeaders(),
@@ -80,18 +86,18 @@ const uploadLocalFile = async (filePath) => {
 
         if (uploadRes.data?.status === 200) {
             return uploadRes.data.result[0].filecode;
+        } else {
+            console.error(`❌ Dood Error: ${uploadRes.data?.msg}`);
         }
     } catch (e) {
-        console.error(`❌ Upload Failed: ${e.message}`);
-    } finally {
-        // Step C: Cleanup Temp File
-        if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
+        console.error(`❌ Upload Network Error: ${e.message}`);
     }
+    // Note: Cleanup happens in the main loop finally block
     return null;
 };
 
 // ==========================================
-// 🌐 API FETCHING LOGIC
+// 🌐 API FETCHING
 // ==========================================
 
 function normalizeData(data, type) {
@@ -130,48 +136,44 @@ const extractYear = (info) => {
     return 0;
 };
 
+// Robust Search with Fallback
 const searchAnime = async (keyword, page) => {
-    const url = `${API_BASE_URL}/hianime/search?q=${keyword}&page=${page}`;
-    try {
-        console.log(`\n📑 [SEARCH: '${keyword.toUpperCase()}'] Fetching Page ${page}...`);
-        const { data } = await axios.get(url);
-        return normalizeData(data, 'list') || [];
-    } catch (e) { return []; }
+    const urls = [
+        `${API_BASE_URL}/hianime/search?q=${keyword}&page=${page}`,
+        `${API_BASE_URL}/api/v2/hianime/search?q=${keyword}&page=${page}`,
+        `${API_BASE_URL}/search?q=${keyword}&page=${page}`
+    ];
+
+    for (const url of urls) {
+        try {
+            const { data } = await axios.get(url);
+            const list = normalizeData(data, 'list');
+            if (list) return list;
+        } catch (e) {}
+    }
+    return [];
 };
 
 const getAnimeDetails = async (animeId) => {
-    const url = `${API_BASE_URL}/hianime/anime/${animeId}`;
     try {
-        const { data } = await axios.get(url);
+        const { data } = await axios.get(`${API_BASE_URL}/hianime/anime/${animeId}`);
         return normalizeData(data, 'info');
     } catch (e) { return null; }
 };
 
 const getEpisodesFromApi = async (animeId) => {
-    const routes = [
-        `${API_BASE_URL}/hianime/anime/episodes/${animeId}`,
-        `${API_BASE_URL}/hianime/episodes/${animeId}`
-    ];
-    for (const url of routes) {
-        try {
-            const { data } = await axios.get(url);
-            const eps = normalizeData(data, 'episodes');
-            if (eps && eps.length > 0) return eps;
-        } catch(e) {}
-    }
-    return [];
+    try {
+        const { data } = await axios.get(`${API_BASE_URL}/hianime/anime/episodes/${animeId}`);
+        return normalizeData(data, 'episodes') || [];
+    } catch(e) { return []; }
 };
 
 const getLinkFromApi = async (episodeId) => {
-    const url = `${API_BASE_URL}/hianime/episode/sources?animeEpisodeId=${episodeId}&server=vidstreaming&category=sub`;
     try {
-        const { data } = await axios.get(url);
+        const { data } = await axios.get(`${API_BASE_URL}/hianime/episode/sources?animeEpisodeId=${episodeId}&server=vidstreaming&category=sub`);
         const sources = normalizeData(data, 'sources');
         if (sources?.length > 0) {
-            const source = sources.find(s => s.quality === 'auto') || 
-                           sources.find(s => s.quality === '1080p') || 
-                           sources.find(s => s.quality === 'default') || 
-                           sources[0];
+            const source = sources.find(s => s.quality === 'auto') || sources[0];
             return source.url;
         }
     } catch (e) { return null; }
@@ -179,7 +181,7 @@ const getLinkFromApi = async (episodeId) => {
 };
 
 // ==========================================
-// ⚙️ SYNC LOGIC
+// ⚙️ SYNC LOGIC (Strict Matching)
 // ==========================================
 
 const syncSingleSeason = async (id, title) => {
@@ -188,12 +190,21 @@ const syncSingleSeason = async (id, title) => {
 
     console.log(`🎬 [SYNC] ${title} (ID: ${id})`);
 
-    let series = await Series.findOne({ title: new RegExp(`^${title}`, 'i') });
+    // FIX 5: Strict Matching (Title + Source URL ID)
+    // Sirf Title se match nahi karenge, ID check zaroori hai
+    let series = await Series.findOne({ 
+        $or: [
+            { sourceUrl: `https://hianime.to/${id}` }, // Precise Match
+            { title: title, language: "Sub" }          // Fallback
+        ]
+    });
+
     if (!series) {
         series = await Series.create({ 
             title: title, 
             sourceUrl: `https://hianime.to/${id}`, 
-            language: "Sub" 
+            language: "Sub",
+            source: 'hianime' // Add source flag
         });
         console.log(`🆕 Series Created: ${title}`);
     }
@@ -202,23 +213,29 @@ const syncSingleSeason = async (id, title) => {
     if (!episodes || episodes.length === 0) return;
 
     for (let ep of episodes) {
+        const epNum = ep.number || ep.num;
+        let localPath = null;
+
         try {
-            const epNum = ep.number || ep.num;
+            // Check Exists
             const existing = await Episode.findOne({ seriesId: series._id, episodeNumber: epNum });
-            
-            if (existing && (existing.status === 'completed' || existing.status === 'uploaded')) {
+            if (existing && existing.status === 'uploaded') {
                 continue;
             }
 
+            // Fetch -> Download -> Upload Pipeline
             const targetId = ep.episodeId || ep.id;
             const m3u8Link = await getLinkFromApi(targetId);
             
             if (m3u8Link) {
-                // 1. Download m3u8 to local MP4
-                const fileName = `${id}-ep${epNum}.mp4`;
-                const localPath = await downloadM3U8(m3u8Link, fileName);
+                // Generate Safe Filename (remove special chars)
+                const safeTitle = title.replace(/[^a-z0-9]/gi, '_').toLowerCase();
+                const fileName = `${safeTitle}_ep${epNum}_${Date.now()}.mp4`;
+                
+                // 1. Download (Immediate)
+                localPath = await downloadM3U8(m3u8Link, fileName);
 
-                // 2. Upload to DoodStream
+                // 2. Upload
                 const fileCode = await uploadLocalFile(localPath);
 
                 if (fileCode) {
@@ -227,21 +244,26 @@ const syncSingleSeason = async (id, title) => {
                         { 
                             remoteId: fileCode,
                             downloadLink: `https://dood.li/d/${fileCode}`,
-                            status: 'uploaded', // Updated status
+                            status: 'uploaded', 
                             title: ep.title || `Episode ${epNum}`
                         },
                         { upsert: true }
                     );
-                    console.log(`✅ Ep ${epNum} Uploaded (Code: ${fileCode})`);
-                } else {
-                    console.log(`❌ Upload Failed for Ep ${epNum}`);
+                    console.log(`✅ Ep ${epNum} Success: ${fileCode}`);
                 }
             } else {
-                console.log(`❌ No stream found for Ep ${epNum}`);
+                console.log(`❌ No Stream for Ep ${epNum}`);
             }
             await sleep(DELAY_BETWEEN_EPS); 
+
         } catch (err) { 
-            console.error(`⚠️ Error Ep ${ep.number}: ${err.message}`);
+            console.error(`⚠️ Error Ep ${epNum}: ${err.message}`);
+        } finally {
+            // FIX 4: Safety Cleanup (Always delete temp file)
+            if (localPath && fs.existsSync(localPath)) {
+                fs.unlinkSync(localPath);
+                // console.log("🗑️ Temp file cleaned.");
+            }
         }
     }
 };
@@ -280,9 +302,12 @@ const extractAndUpload = async (mainUrl, animeName, languageTag) => {
         return;
     }
     isCrawling = true; 
+    
+    // Initialize Temp Directory on Start
+    initTempDir();
 
     try {
-        console.log(`\n🚀 INITIALIZING DOWNLOAD-UPLOAD PIPELINE...`);
+        console.log(`\n🚀 INITIALIZING VPS-GRADE CRAWLER...`);
         console.log(`📅 Filter: Year >= ${MIN_YEAR}`);
 
         for (const letter of SEARCH_KEYWORDS) {
@@ -291,7 +316,6 @@ const extractAndUpload = async (mainUrl, animeName, languageTag) => {
             for (let page = 1; page <= MAX_PAGES_PER_LETTER; page++) {
                 
                 const animeList = await searchAnime(letter, page);
-                
                 if (!animeList || animeList.length === 0) break; 
 
                 console.log(`📦 Page ${page}: ${animeList.length} Animes`);
