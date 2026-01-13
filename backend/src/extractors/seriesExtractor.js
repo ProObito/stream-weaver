@@ -2,15 +2,19 @@ const axios = require('axios');
 const mongoose = require('mongoose');
 
 // --- CONFIGURATION ---
+// Apna Current API URL yahan daalo
 const API_BASE_URL = "https://hianimeapi-1vww.onrender.com"; 
 
-// Helper: Delay
+// Helper: Delay to prevent rate limits
 const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
 // --- 1. DOODSTREAM UPLOAD ---
 const addRemoteUpload = async (videoUrl) => {
     const key = process.env.DOODSTREAM_KEY;
-    if (!key) return null;
+    if (!key) {
+        console.error("❌ DoodStream API Key Missing!");
+        return null;
+    }
 
     const apiUrl = `https://doodapi.com/api/upload/url?key=${key}&url=${encodeURIComponent(videoUrl)}`;
     
@@ -26,66 +30,74 @@ const addRemoteUpload = async (videoUrl) => {
     }
 };
 
-// --- 2. SUPER SMART FETCH (Handles /id and ?id=id) ---
-const fetchWithFallbacks = async (builders, id) => {
-    for (const buildUrl of builders) {
+// --- 2. SMART FETCH HELPER (The Magic Logic) ---
+// Ye function alag-alag URL patterns try karta hai jab tak data na mile
+const fetchWithFallbacks = async (urlBuilders, id) => {
+    for (const builder of urlBuilders) {
         try {
-            const url = buildUrl(id);
-            // console.log(`👉 Trying URL: ${url}`); // Debugging check
+            const url = builder(id);
+            // console.log(`👉 Probing: ${url}`); // Debugging line
             
             const { data } = await axios.get(url);
+            
+            // Validate Data
             if (data) return data;
         } catch (e) {
-            // Ignore 404, try next format
+            // 404 aaya toh ignore karo aur next pattern try karo
             continue;
         }
     }
-    return null;
+    return null; // Sab fail
 };
 
-// --- 3. GET VIDEO LINK ---
+// --- 3. GET VIDEO LINK (Supports All API Versions) ---
 const getLinkFromApi = async (episodeId) => {
-    // Sab tarah ke formats try karenge
-    const urlBuilders = [
-        (id) => `${API_BASE_URL}/anime/hianime/watch/${id}`,      // Consumet Style (Slash)
-        (id) => `${API_BASE_URL}/hianime/watch?episodeId=${id}`, // Standard (Query)
-        (id) => `${API_BASE_URL}/anime/episode-srcs?id=${id}`,   // Zxyu Style
-        (id) => `${API_BASE_URL}/anime/hianime/watch?episodeId=${id}`
+    // List of all known route patterns
+    const routes = [
+        (id) => `${API_BASE_URL}/anime/episode-srcs?id=${id}`,          // Standard HiAnime
+        (id) => `${API_BASE_URL}/hianime/watch?episodeId=${id}`,         // Consumet Query
+        (id) => `${API_BASE_URL}/anime/hianime/watch/${id}`,             // Consumet Path
+        (id) => `${API_BASE_URL}/api/v2/hianime/episode/sources?animeEpisodeId=${id}` // Ryanwtf88/New
     ];
 
-    const data = await fetchWithFallbacks(urlBuilders, episodeId);
+    const data = await fetchWithFallbacks(routes, episodeId);
 
-    if (data && data.sources && data.sources.length > 0) {
-        const source = data.sources.find(s => s.quality === 'auto') || 
-                       data.sources.find(s => s.quality === 'default') || 
-                       data.sources[0];
+    // Extract Link logic (handles 'data.data' wrapper used by some APIs)
+    let sources = [];
+    if (data && data.sources) sources = data.sources;
+    else if (data && data.data && data.data.sources) sources = data.data.sources;
+
+    if (sources.length > 0) {
+        const source = sources.find(s => s.quality === 'auto') || 
+                       sources.find(s => s.quality === 'default') || 
+                       sources[0];
         return source.url; 
     }
     return null;
 };
 
-// --- 4. GET EPISODE LIST ---
+// --- 4. GET EPISODE LIST (Supports All API Versions) ---
 const getEpisodesFromApi = async (animeId) => {
-    // Sab tarah ke formats try karenge
-    const urlBuilders = [
-        (id) => `${API_BASE_URL}/anime/hianime/info/${id}`,   // Consumet Style (Slash)
-        (id) => `${API_BASE_URL}/hianime/info?id=${id}`,      // Standard (Query)
-        (id) => `${API_BASE_URL}/anime/info?id=${id}`,        // Common
-        (id) => `${API_BASE_URL}/info/${id}`                  // Simple
+    // List of all known route patterns
+    const routes = [
+        (id) => `${API_BASE_URL}/anime/info?id=${id}`,            // Standard HiAnime
+        (id) => `${API_BASE_URL}/hianime/info?id=${id}`,          // Consumet Query
+        (id) => `${API_BASE_URL}/anime/hianime/info/${id}`,       // Consumet Path
+        (id) => `${API_BASE_URL}/api/v2/hianime/anime?id=${id}`   // Ryanwtf88/New
     ];
 
-    console.log(`📡 Probing API for ID: ${animeId}`);
-    const data = await fetchWithFallbacks(urlBuilders, animeId);
+    console.log(`📡 Scanning API for ID: ${animeId}`);
+    const data = await fetchWithFallbacks(routes, animeId);
 
     if (!data) {
-        console.log(`❌ Failed to fetch info for ${animeId} (Checked all route formats)`);
+        console.log(`❌ Failed to fetch info. (Checked 4 different API routes)`);
         return [];
     }
 
-    // Data extraction strategy
+    // Extract Episodes logic (handles different JSON structures)
     if (data.episodes) return data.episodes;
+    if (data.data && data.data.episodes) return data.data.episodes; // For v2/v1 APIs
     if (data.anime && data.anime.episodes) return data.anime.episodes;
-    if (data.data && data.data.episodes) return data.data.episodes;
 
     return [];
 };
@@ -96,45 +108,61 @@ const extractAndUpload = async (mainUrl, animeName, languageTag) => {
         const Episode = mongoose.model('Episode');
         const Series = mongoose.model('Series');
 
-        console.log(`🚀 Starting Sync (Universal Mode): ${animeName}`);
+        console.log(`🚀 Starting Sync (Smart Mode): ${animeName}`);
 
-        // ID Extraction
+        // --- ID EXTRACTION ---
         let animeId = "";
         try {
             const urlObj = new URL(mainUrl);
             const pathSegments = urlObj.pathname.split('/').filter(Boolean);
+            
+            // Handle /watch/ URLs
             if (pathSegments.includes('watch')) {
                 animeId = pathSegments[pathSegments.indexOf('watch') + 1];
             } else {
                 animeId = pathSegments[pathSegments.length - 1];
             }
+            
+            // Remove Query Params
             if (animeId.includes('?')) animeId = animeId.split('?')[0];
+
         } catch (e) {
-            console.error("❌ Invalid URL");
+            console.error("❌ Invalid URL Format");
             return;
         }
 
         console.log(`ℹ️ Extracted ID: ${animeId}`);
 
-        // Series Check
-        let series = await Series.findOne({ title: new RegExp(`^${animeName}`, 'i') });
-        if (!series) {
-            series = await Series.create({ title: `${animeName} (${languageTag})`, sourceUrl: mainUrl, language: languageTag });
+        if (!animeId) {
+            console.error("❌ Could not parse ID.");
+            return;
         }
 
-        // Get Episodes
+        // 1. Check/Create Series
+        let series = await Series.findOne({ title: new RegExp(`^${animeName}`, 'i') });
+        if (!series) {
+            series = await Series.create({ 
+                title: `${animeName} (${languageTag})`, 
+                sourceUrl: mainUrl, 
+                language: languageTag 
+            });
+        }
+
+        // 2. Get Episodes
         const episodes = await getEpisodesFromApi(animeId);
         console.log(`🔍 Found ${episodes.length} episodes via API.`);
 
         if (episodes.length === 0) {
-            console.log("⚠️ 0 Episodes found. API ID match nahi ho raha ya API structure alag hai.");
+            console.log("⚠️ 0 Episodes found. Check Logs.");
             return;
         }
 
+        // 3. Process Episodes
         for (let ep of episodes) {
             try {
                 const epNum = ep.number; 
                 
+                // Check Database
                 const existing = await Episode.findOne({ seriesId: series._id, episodeNumber: epNum });
                 if (existing && existing.status === 'completed') {
                     console.log(`⏭️ Skipping Ep ${epNum} (Already Live)`);
@@ -149,6 +177,7 @@ const extractAndUpload = async (mainUrl, animeName, languageTag) => {
                     const fileCode = await addRemoteUpload(directLink);
 
                     if (fileCode) {
+                        // SAVE BOTH STREAM & DOWNLOAD LINKS
                         await Episode.findOneAndUpdate(
                             { seriesId: series._id, episodeNumber: epNum },
                             { 
@@ -170,7 +199,8 @@ const extractAndUpload = async (mainUrl, animeName, languageTag) => {
             } catch (err) {
                 console.error(`❌ Ep Error: ${err.message}`);
             }
-            await sleep(2000); 
+            
+            await sleep(2000); // Polite delay
         }
         console.log(`🏁 Sync Finished for ${animeName}`);
 
