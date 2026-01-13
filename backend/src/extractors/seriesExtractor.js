@@ -8,31 +8,29 @@ const API_BASE_URL = "https://hianime-api-seven-teal.vercel.app";
 const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
 /**
- * 🛠️ NORMALIZER: Sabse Important Part
- * Ye function kisi bhi tarah ke API response ko Stream-Weaver ke format mein badal dega.
+ * 🛠️ DATA NORMALIZER
+ * API ke alag-alag JSON structures ko ek standard format mein convert karta hai.
  */
 function normalizeData(data, type) {
     if (!data) return null;
 
     if (type === 'episodes') {
-        // Case 1: hianime-api format (Flat)
+        // Case 1: hianime-api format (Flat: res.episodes)
         if (data.episodes && Array.isArray(data.episodes)) return data.episodes;
         
-        // Case 2: Deep nesting (data.data.episodes.data)
+        // Case 2: Standard/Nested format (res.data.episodes)
         if (data.data?.episodes?.data) return data.data.episodes.data;
-        
-        // Case 3: Standard nesting (data.data.episodes)
         if (data.data?.episodes) return data.data.episodes;
         
-        // Case 4: Consumet style
+        // Case 3: Consumet/Other formats
         if (data.anime?.episodes) return data.anime.episodes;
     }
 
     if (type === 'sources') {
-        // Case 1: hianime-api (Flat sources array)
+        // Case 1: Flat format (res.sources)
         if (data.sources && Array.isArray(data.sources)) return data.sources;
         
-        // Case 2: Nested (data.data.sources)
+        // Case 2: Nested format (res.data.sources)
         if (data.data?.sources) return data.data.sources;
     }
 
@@ -41,11 +39,17 @@ function normalizeData(data, type) {
 
 /**
  * 🚀 1. DOODSTREAM REMOTE UPLOAD
+ * Video URL bhejta hai aur DoodStream se file_code leta hai.
  */
 const addRemoteUpload = async (videoUrl) => {
     const key = process.env.DOODSTREAM_KEY;
-    if (!key) return null;
+    if (!key) {
+        console.error("❌ DoodStream Key Missing in Config!");
+        return null;
+    }
+
     const apiUrl = `https://doodapi.com/api/upload/url?key=${key}&url=${encodeURIComponent(videoUrl)}`;
+    
     try {
         const { data } = await axios.get(apiUrl);
         if (data.status === 200 && data.result && data.result.filecode) {
@@ -53,12 +57,14 @@ const addRemoteUpload = async (videoUrl) => {
         }
         return null;
     } catch (err) {
+        console.error("DoodStream Upload Error:", err.message);
         return null;
     }
 };
 
 /**
- * 🔗 2. GET VIDEO LINK (With Normalizer)
+ * 🔗 2. GET DIRECT VIDEO LINK
+ * Multiple routes try karta hai aur response ko normalize karta hai.
  */
 const getLinkFromApi = async (episodeId) => {
     const routes = [
@@ -73,7 +79,10 @@ const getLinkFromApi = async (episodeId) => {
             const sources = normalizeData(rawResponse, 'sources');
 
             if (sources && sources.length > 0) {
-                const source = sources.find(s => s.quality === 'auto') || sources[0];
+                // Priority: auto > default > first
+                const source = sources.find(s => s.quality === 'auto') || 
+                               sources.find(s => s.quality === 'default') || 
+                               sources[0];
                 return source.url;
             }
         } catch (e) { continue; }
@@ -82,7 +91,8 @@ const getLinkFromApi = async (episodeId) => {
 };
 
 /**
- * 📋 3. GET EPISODE LIST (With Normalizer)
+ * 📋 3. GET EPISODE LIST
+ * Sabse pehle info fetch karta hai aur episodes array nikalta hai.
  */
 const getEpisodesFromApi = async (animeId) => {
     const routes = [
@@ -91,7 +101,7 @@ const getEpisodesFromApi = async (animeId) => {
         (id) => `${API_BASE_URL}/api/v2/hianime/anime?id=${id}`
     ];
 
-    console.log(`📡 Probing API with Normalizer for: ${animeId}`);
+    console.log(`📡 Probing API for Anime ID: ${animeId}`);
 
     for (const builder of routes) {
         try {
@@ -99,7 +109,7 @@ const getEpisodesFromApi = async (animeId) => {
             const episodes = normalizeData(rawResponse, 'episodes');
 
             if (episodes && episodes.length > 0) {
-                console.log(`✅ Success! Found ${episodes.length} episodes.`);
+                console.log(`✅ Success! Found ${episodes.length} episodes on route: ${builder(animeId)}`);
                 return episodes;
             }
         } catch (e) { continue; }
@@ -109,19 +119,24 @@ const getEpisodesFromApi = async (animeId) => {
 
 /**
  * 🎮 4. MAIN CONTROLLER
+ * Admin panel se call hota hai poora process start karne ke liye.
  */
 const extractAndUpload = async (mainUrl, animeName, languageTag) => {
     try {
         const Episode = mongoose.model('Episode');
         const Series = mongoose.model('Series');
 
-        // Extract ID
+        console.log(`🚀 Starting Global Sync: ${animeName}`);
+
+        // --- ID EXTRACTION ---
         let animeId = mainUrl.split('/').pop().split('?')[0];
         if (mainUrl.includes('/watch/')) {
             animeId = mainUrl.split('/watch/')[1].split('?')[0];
         }
 
-        // DB Series check
+        console.log(`ℹ️ Normalized Anime ID: ${animeId}`);
+
+        // 1. Database mein Series check/create
         let series = await Series.findOne({ title: new RegExp(`^${animeName}`, 'i') });
         if (!series) {
             series = await Series.create({ 
@@ -131,26 +146,40 @@ const extractAndUpload = async (mainUrl, animeName, languageTag) => {
             });
         }
 
+        // 2. Fetch episodes list from API
         const episodes = await getEpisodesFromApi(animeId);
 
         if (!episodes || episodes.length === 0) {
-            console.log("⚠️ 0 Episodes. Normalizer failed to find episodes key.");
+            console.log("⚠️ API active hai par structure match nahi hua ya ID galat hai.");
             return;
         }
 
+        // 3. Process each episode
         for (let ep of episodes) {
             try {
+                // 'number' ya 'num' handle karo
                 const epNum = ep.number || ep.num;
+                
+                // Skip if already done
                 const existing = await Episode.findOne({ seriesId: series._id, episodeNumber: epNum });
-                if (existing && existing.status === 'completed') continue;
+                if (existing && existing.status === 'completed') {
+                    console.log(`⏭️ Skipping Ep ${epNum} (Already Live)`);
+                    continue;
+                }
 
-                // Important: Kuch APIs me 'episodeId' hota hai, kuch me 'id'
+                // 'episodeId' ya 'id' handle karo
                 const targetId = ep.episodeId || ep.id;
+                
+                // A. Get direct .m3u8 link
                 const directLink = await getLinkFromApi(targetId);
                 
                 if (directLink) {
+                    // B. Send to DoodStream
+                    console.log(`📡 Sending Ep ${epNum} to DoodStream...`);
                     const fileCode = await addRemoteUpload(directLink);
+
                     if (fileCode) {
+                        // C. Update Database
                         await Episode.findOneAndUpdate(
                             { seriesId: series._id, episodeNumber: epNum },
                             { 
@@ -161,14 +190,23 @@ const extractAndUpload = async (mainUrl, animeName, languageTag) => {
                             },
                             { upsert: true }
                         );
-                        console.log(`✅ Ep ${epNum} Queued!`);
+                        console.log(`✅ Ep ${epNum} Queued! Code: ${fileCode}`);
                     }
+                } else {
+                    console.log(`❌ No link found for Ep ${epNum}`);
                 }
-            } catch (err) { console.error("Loop Error:", err.message); }
-            await sleep(2000);
+
+            } catch (err) {
+                console.error(`❌ Error processing Ep: ${err.message}`);
+            }
+            // 2 second gap API ko block hone se bachane ke liye
+            await sleep(2000); 
         }
+
+        console.log(`🏁 Sync Finished for ${animeName}`);
+
     } catch (err) {
-        console.error("Global Error:", err.message);
+        console.error(`💥 CRITICAL GLOBAL ERROR: ${err.message}`);
     }
 };
 
