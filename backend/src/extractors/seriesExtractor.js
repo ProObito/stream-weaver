@@ -4,16 +4,19 @@ const fs = require('fs');
 const path = require('path');
 const { exec } = require('child_process');
 const FormData = require('form-data');
-const rimraf = require('rimraf'); // Ensure npm install rimraf
 
 // ==========================================
 // ⚙️ SYSTEM CONFIGURATION
 // ==========================================
 const API_BASE_URL = "https://hianime-api-seven-teal.vercel.app"; 
 const MIN_YEAR = 2010;             
-const MAX_PAGES_PER_LETTER = 5;    // Keep low to prevent ban
+const MAX_PAGES_PER_LETTER = 10;   
 const RETRY_LIMIT = 3;             
 const DELAY_BETWEEN_EPS = 3000;    
+const DELAY_BETWEEN_ANIMES = 6000; // ✅ FIXED: Defined variable
+
+// State File Path (Yaad rakhne ke liye hum kahan the)
+const STATE_FILE = path.join(__dirname, 'crawler_state.json');
 const TEMP_DIR = path.join(__dirname, 'temp_downloads');
 
 // Crawl Order: 0-9 then A-Z
@@ -22,13 +25,34 @@ const SEARCH_KEYWORDS = "0123456789abcdefghijklmnopqrstuvwxyz".split("");
 let isCrawling = false;
 
 // ==========================================
-// 🧹 CLEANUP & SETUP (CRITICAL FIX)
+// 💾 STATE MANAGEMENT (RESUME CAPABILITY)
 // ==========================================
 
-// Server start hote hi purani zombie files uda do
+const loadState = () => {
+    if (fs.existsSync(STATE_FILE)) {
+        try {
+            return JSON.parse(fs.readFileSync(STATE_FILE, 'utf8'));
+        } catch (e) {
+            console.error("⚠️ State file corrupt. Starting fresh.");
+        }
+    }
+    return { letterIndex: 0, page: 1 };
+};
+
+const saveState = (letterIndex, page) => {
+    try {
+        fs.writeFileSync(STATE_FILE, JSON.stringify({ letterIndex, page }));
+    } catch (e) {
+        console.error("⚠️ Failed to save state.");
+    }
+};
+
+// ==========================================
+// 🧹 CLEANUP & HELPERS
+// ==========================================
+
 const initTempDir = () => {
     if (fs.existsSync(TEMP_DIR)) {
-        console.log("🧹 Cleaning up old temp files...");
         fs.rmSync(TEMP_DIR, { recursive: true, force: true });
     }
     fs.mkdirSync(TEMP_DIR);
@@ -37,24 +61,29 @@ const initTempDir = () => {
 const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
 // ==========================================
-// 🛠️ FFMPEG & UPLOAD HANDLERS
+// 🛠️ FFMPEG & UPLOAD (WITH RETRY & BACKOFF)
 // ==========================================
 
-const downloadM3U8 = (m3u8Url, filename) => {
+const downloadM3U8 = (m3u8Url, filename, attempt = 1) => {
     return new Promise((resolve, reject) => {
         const outputPath = path.join(TEMP_DIR, filename);
         
-        console.log(`⬇️ Stream Start: ${filename}`);
+        console.log(`⬇️ Stream Download (Attempt ${attempt}): ${filename}`);
         
-        // Timeout protection: 10 mins max per file
+        // Timeout: 10 mins
         const cmd = `ffmpeg -i "${m3u8Url}" -c copy -bsf:a aac_adtstoasc "${outputPath}" -y -hide_banner -loglevel error`;
 
-        exec(cmd, { timeout: 600000 }, (error, stdout, stderr) => {
+        exec(cmd, { timeout: 600000 }, async (error, stdout, stderr) => {
             if (error) {
                 console.error(`❌ FFmpeg Fail: ${error.message}`);
-                // Agar corrupt file ban gayi hai toh uda do
-                if (fs.existsSync(outputPath)) fs.unlinkSync(outputPath);
-                reject(error);
+                if (attempt < RETRY_LIMIT) {
+                    console.log(`🔄 Retrying download in 5s...`);
+                    await sleep(5000);
+                    // Recursively retry
+                    resolve(downloadM3U8(m3u8Url, filename, attempt + 1)); 
+                } else {
+                    reject(error);
+                }
             } else {
                 resolve(outputPath);
             }
@@ -66,33 +95,43 @@ const uploadLocalFile = async (filePath) => {
     const key = process.env.DOODSTREAM_KEY;
     if (!key) return null;
 
-    try {
-        const serverReq = await axios.get(`https://doodapi.com/api/upload/server?key=${key}`);
-        const uploadUrl = serverReq.data?.result;
+    let attempts = 0;
+    
+    while (attempts < RETRY_LIMIT) {
+        try {
+            const serverReq = await axios.get(`https://doodapi.com/api/upload/server?key=${key}`);
+            const uploadUrl = serverReq.data?.result;
 
-        if (!uploadUrl) throw new Error("No DoodStream upload server");
+            if (!uploadUrl) throw new Error("No upload server");
 
-        const form = new FormData();
-        form.append('api_key', key);
-        form.append('file', fs.createReadStream(filePath));
+            const form = new FormData();
+            form.append('api_key', key);
+            form.append('file', fs.createReadStream(filePath));
 
-        console.log(`⬆️ Uploading to Dood...`);
-        
-        const uploadRes = await axios.post(uploadUrl, form, {
-            headers: form.getHeaders(),
-            maxContentLength: Infinity,
-            maxBodyLength: Infinity
-        });
+            console.log(`⬆️ Uploading to Dood (Attempt ${attempts + 1})...`);
+            
+            const uploadRes = await axios.post(uploadUrl, form, {
+                headers: form.getHeaders(),
+                maxContentLength: Infinity,
+                maxBodyLength: Infinity
+            });
 
-        if (uploadRes.data?.status === 200) {
-            return uploadRes.data.result[0].filecode;
-        } else {
-            console.error(`❌ Dood Error: ${uploadRes.data?.msg}`);
+            if (uploadRes.data?.status === 200) {
+                return uploadRes.data.result[0].filecode;
+            } else {
+                throw new Error(`Dood API Error: ${uploadRes.data?.msg || 'Unknown'}`);
+            }
+
+        } catch (e) {
+            attempts++;
+            console.error(`❌ Upload Fail: ${e.message}`);
+            
+            // Smart Backoff: Agar fail hua to wait time badhao (30s, 60s, 90s)
+            const waitTime = attempts * 30000;
+            console.log(`⏳ Pausing for ${waitTime/1000}s before retry...`);
+            await sleep(waitTime);
         }
-    } catch (e) {
-        console.error(`❌ Upload Network Error: ${e.message}`);
     }
-    // Note: Cleanup happens in the main loop finally block
     return null;
 };
 
@@ -111,12 +150,10 @@ function normalizeData(data, type) {
     if (type === 'info') { 
         if (data.data?.anime) return data.data.anime;
         if (data.anime) return data.anime;
-        if (data.data?.info) return data.data.info;
     }
     if (type === 'episodes') {
         if (data.data?.episodes) return data.data.episodes;
         if (data.episodes) return data.episodes;
-        if (data.data?.episodes?.data) return data.data.episodes.data;
     }
     if (type === 'sources') {
         if (data.data?.sources) return data.data.sources;
@@ -136,20 +173,16 @@ const extractYear = (info) => {
     return 0;
 };
 
-// Robust Search with Fallback
 const searchAnime = async (keyword, page) => {
-    const urls = [
-        `${API_BASE_URL}/hianime/search?q=${keyword}&page=${page}`,
-        `${API_BASE_URL}/api/v2/hianime/search?q=${keyword}&page=${page}`,
-        `${API_BASE_URL}/search?q=${keyword}&page=${page}`
-    ];
-
-    for (const url of urls) {
+    // Retry Logic for API Search
+    for (let i = 0; i < 3; i++) {
         try {
+            const url = `${API_BASE_URL}/hianime/search?q=${keyword}&page=${page}`;
             const { data } = await axios.get(url);
-            const list = normalizeData(data, 'list');
-            if (list) return list;
-        } catch (e) {}
+            return normalizeData(data, 'list') || [];
+        } catch (e) {
+            await sleep(2000);
+        }
     }
     return [];
 };
@@ -181,7 +214,7 @@ const getLinkFromApi = async (episodeId) => {
 };
 
 // ==========================================
-// ⚙️ SYNC LOGIC (Strict Matching)
+// ⚙️ SYNC LOGIC
 // ==========================================
 
 const syncSingleSeason = async (id, title) => {
@@ -190,12 +223,10 @@ const syncSingleSeason = async (id, title) => {
 
     console.log(`🎬 [SYNC] ${title} (ID: ${id})`);
 
-    // FIX 5: Strict Matching (Title + Source URL ID)
-    // Sirf Title se match nahi karenge, ID check zaroori hai
     let series = await Series.findOne({ 
         $or: [
-            { sourceUrl: `https://hianime.to/${id}` }, // Precise Match
-            { title: title, language: "Sub" }          // Fallback
+            { sourceUrl: `https://hianime.to/${id}` }, 
+            { title: title, language: "Sub" }
         ]
     });
 
@@ -204,7 +235,7 @@ const syncSingleSeason = async (id, title) => {
             title: title, 
             sourceUrl: `https://hianime.to/${id}`, 
             language: "Sub",
-            source: 'hianime' // Add source flag
+            source: 'hianime' 
         });
         console.log(`🆕 Series Created: ${title}`);
     }
@@ -217,22 +248,20 @@ const syncSingleSeason = async (id, title) => {
         let localPath = null;
 
         try {
-            // Check Exists
             const existing = await Episode.findOne({ seriesId: series._id, episodeNumber: epNum });
-            if (existing && existing.status === 'uploaded') {
+            // Strict check: Status must be uploaded AND remoteId must exist
+            if (existing && existing.status === 'uploaded' && existing.remoteId) {
                 continue;
             }
 
-            // Fetch -> Download -> Upload Pipeline
             const targetId = ep.episodeId || ep.id;
             const m3u8Link = await getLinkFromApi(targetId);
             
             if (m3u8Link) {
-                // Generate Safe Filename (remove special chars)
                 const safeTitle = title.replace(/[^a-z0-9]/gi, '_').toLowerCase();
                 const fileName = `${safeTitle}_ep${epNum}_${Date.now()}.mp4`;
                 
-                // 1. Download (Immediate)
+                // 1. Download
                 localPath = await downloadM3U8(m3u8Link, fileName);
 
                 // 2. Upload
@@ -259,10 +288,9 @@ const syncSingleSeason = async (id, title) => {
         } catch (err) { 
             console.error(`⚠️ Error Ep ${epNum}: ${err.message}`);
         } finally {
-            // FIX 4: Safety Cleanup (Always delete temp file)
+            // ALWAYS Cleanup
             if (localPath && fs.existsSync(localPath)) {
                 fs.unlinkSync(localPath);
-                // console.log("🗑️ Temp file cleaned.");
             }
         }
     }
@@ -294,7 +322,7 @@ const processAnimeFilter = async (anime) => {
 };
 
 // ==========================================
-// 🚀 MAIN EXECUTION
+// 🚀 MAIN EXECUTION (RESUME ENABLED)
 // ==========================================
 const extractAndUpload = async (mainUrl, animeName, languageTag) => {
     if (isCrawling) {
@@ -302,31 +330,53 @@ const extractAndUpload = async (mainUrl, animeName, languageTag) => {
         return;
     }
     isCrawling = true; 
-    
-    // Initialize Temp Directory on Start
     initTempDir();
 
     try {
-        console.log(`\n🚀 INITIALIZING VPS-GRADE CRAWLER...`);
+        // Load previous state
+        const state = loadState();
+        console.log(`\n🚀 RESUMING FROM: Letter Index ${state.letterIndex} ('${SEARCH_KEYWORDS[state.letterIndex]}'), Page ${state.page}`);
         console.log(`📅 Filter: Year >= ${MIN_YEAR}`);
 
-        for (const letter of SEARCH_KEYWORDS) {
+        // Outer Loop: Letters (using index to skip processed ones)
+        for (let i = state.letterIndex; i < SEARCH_KEYWORDS.length; i++) {
+            const letter = SEARCH_KEYWORDS[i];
+            
+            // Determine start page for this letter
+            // If it's a resumed letter, use saved page. Else start from 1.
+            let startPage = (i === state.letterIndex) ? state.page : 1;
+
             console.log(`\n🔠 LETTER: ${letter.toUpperCase()}`);
 
-            for (let page = 1; page <= MAX_PAGES_PER_LETTER; page++) {
+            // Inner Loop: Pages
+            for (let page = startPage; page <= MAX_PAGES_PER_LETTER; page++) {
                 
                 const animeList = await searchAnime(letter, page);
-                if (!animeList || animeList.length === 0) break; 
+                if (!animeList || animeList.length === 0) {
+                    console.log(`⚠️ End of letter '${letter}'.`);
+                    break; 
+                }
 
-                console.log(`📦 Page ${page}: ${animeList.length} Animes`);
+                console.log(`📦 Letter '${letter}' Page ${page}: ${animeList.length} Animes`);
 
                 for (let anime of animeList) {
                     await processAnimeFilter(anime);
                     await sleep(DELAY_BETWEEN_ANIMES); 
                 }
+
+                // ✅ Checkpoint: Save State after every page success
+                // Next time, if crash, we start from Next Page or Current Page
+                saveState(i, page + 1);
             }
+            
+            // Letter complete, reset page for next letter
+            saveState(i + 1, 1);
         }
         console.log("\n🎉 SYNC COMPLETE!");
+        
+        // Reset State on Completion
+        if (fs.existsSync(STATE_FILE)) fs.unlinkSync(STATE_FILE);
+
     } catch (err) {
         console.error(`💥 CRASH: ${err.message}`);
     } finally {
