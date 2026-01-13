@@ -4,16 +4,48 @@ const mongoose = require('mongoose');
 // --- CONFIGURATION ---
 const API_BASE_URL = "https://hianime-api-seven-teal.vercel.app"; 
 
-// Helper: Delay
+// Helper: Delay to prevent rate limits
 const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
-// --- 1. DOODSTREAM UPLOAD ---
+/**
+ * 🛠️ NORMALIZER: Sabse Important Part
+ * Ye function kisi bhi tarah ke API response ko Stream-Weaver ke format mein badal dega.
+ */
+function normalizeData(data, type) {
+    if (!data) return null;
+
+    if (type === 'episodes') {
+        // Case 1: hianime-api format (Flat)
+        if (data.episodes && Array.isArray(data.episodes)) return data.episodes;
+        
+        // Case 2: Deep nesting (data.data.episodes.data)
+        if (data.data?.episodes?.data) return data.data.episodes.data;
+        
+        // Case 3: Standard nesting (data.data.episodes)
+        if (data.data?.episodes) return data.data.episodes;
+        
+        // Case 4: Consumet style
+        if (data.anime?.episodes) return data.anime.episodes;
+    }
+
+    if (type === 'sources') {
+        // Case 1: hianime-api (Flat sources array)
+        if (data.sources && Array.isArray(data.sources)) return data.sources;
+        
+        // Case 2: Nested (data.data.sources)
+        if (data.data?.sources) return data.data.sources;
+    }
+
+    return null;
+}
+
+/**
+ * 🚀 1. DOODSTREAM REMOTE UPLOAD
+ */
 const addRemoteUpload = async (videoUrl) => {
     const key = process.env.DOODSTREAM_KEY;
     if (!key) return null;
-
     const apiUrl = `https://doodapi.com/api/upload/url?key=${key}&url=${encodeURIComponent(videoUrl)}`;
-    
     try {
         const { data } = await axios.get(apiUrl);
         if (data.status === 200 && data.result && data.result.filecode) {
@@ -21,121 +53,75 @@ const addRemoteUpload = async (videoUrl) => {
         }
         return null;
     } catch (err) {
-        console.error("DoodStream Error:", err.message);
         return null;
     }
 };
 
-// --- 2. BRUTE-FORCE FETCH HELPER ---
-const fetchWithFallbacks = async (urlBuilders, id) => {
-    for (const builder of urlBuilders) {
-        try {
-            const url = builder(id);
-            // console.log(`👉 Checking: ${url}`); // Debugging
-            
-            const { data } = await axios.get(url);
-            
-            // Agar data mila, toh yahi sahi route hai!
-            if (data) {
-                console.log(`✅ Success on route: ${url}`);
-                return data;
-            }
-        } catch (e) {
-            // 404 ignore karo, agla route try karo
-            continue;
-        }
-    }
-    return null; // Sab fail
-};
-
-// --- 3. GET VIDEO LINK (Try ALL Patterns) ---
+/**
+ * 🔗 2. GET VIDEO LINK (With Normalizer)
+ */
 const getLinkFromApi = async (episodeId) => {
     const routes = [
-        // Ryanwtf88 / Zxyu Patterns
         (id) => `${API_BASE_URL}/hianime/episode/sources?animeEpisodeId=${id}&server=vidstreaming&category=sub`,
-        (id) => `${API_BASE_URL}/api/v2/hianime/episode/sources?animeEpisodeId=${id}&server=vidstreaming&category=sub`,
-        
-        // Consumet Patterns
-        (id) => `${API_BASE_URL}/anime/hianime/watch/${id}`,
-        (id) => `${API_BASE_URL}/hianime/watch?episodeId=${id}`,
-        
-        // Standard Patterns
+        (id) => `${API_BASE_URL}/api/v2/hianime/episode/sources?animeEpisodeId=${id}`,
         (id) => `${API_BASE_URL}/anime/episode-srcs?id=${id}`
     ];
 
-    const data = await fetchWithFallbacks(routes, episodeId);
+    for (const builder of routes) {
+        try {
+            const { data: rawResponse } = await axios.get(builder(episodeId));
+            const sources = normalizeData(rawResponse, 'sources');
 
-    // Extraction Logic
-    let sources = [];
-    if (data?.data?.sources) sources = data.data.sources; // v2
-    else if (data?.sources) sources = data.sources;       // v1
-
-    if (sources.length > 0) {
-        const source = sources.find(s => s.quality === 'auto') || 
-                       sources.find(s => s.quality === 'default') || 
-                       sources[0];
-        return source.url; 
+            if (sources && sources.length > 0) {
+                const source = sources.find(s => s.quality === 'auto') || sources[0];
+                return source.url;
+            }
+        } catch (e) { continue; }
     }
     return null;
 };
 
-// --- 4. GET EPISODE LIST (Try ALL Patterns) ---
+/**
+ * 📋 3. GET EPISODE LIST (With Normalizer)
+ */
 const getEpisodesFromApi = async (animeId) => {
     const routes = [
-        // Ryanwtf88 / Zxyu Patterns
-        (id) => `${API_BASE_URL}/hianime/anime/${id}`,            // Path Param
-        (id) => `${API_BASE_URL}/hianime/anime?id=${id}`,          // Query Param
-        (id) => `${API_BASE_URL}/api/v2/hianime/anime?id=${id}`,   // API Prefix
-        
-        // Consumet Patterns
-        (id) => `${API_BASE_URL}/anime/hianime/info/${id}`,
-        (id) => `${API_BASE_URL}/hianime/info?id=${id}`,
-        
-        // Standard Patterns
-        (id) => `${API_BASE_URL}/anime/info?id=${id}`
+        (id) => `${API_BASE_URL}/hianime/anime/${id}`,
+        (id) => `${API_BASE_URL}/hianime/anime?id=${id}`,
+        (id) => `${API_BASE_URL}/api/v2/hianime/anime?id=${id}`
     ];
 
-    console.log(`📡 Probing API for ID: ${animeId}`);
-    const data = await fetchWithFallbacks(routes, animeId);
+    console.log(`📡 Probing API with Normalizer for: ${animeId}`);
 
-    if (!data) {
-        console.log(`❌ Failed to fetch info. (Tried 6 different routes)`);
-        return [];
+    for (const builder of routes) {
+        try {
+            const { data: rawResponse } = await axios.get(builder(animeId));
+            const episodes = normalizeData(rawResponse, 'episodes');
+
+            if (episodes && episodes.length > 0) {
+                console.log(`✅ Success! Found ${episodes.length} episodes.`);
+                return episodes;
+            }
+        } catch (e) { continue; }
     }
-
-    // Extraction Logic (Deep Search)
-    if (data?.data?.episodes?.data) return data.data.episodes.data; // Deepest nesting
-    if (data?.data?.episodes) return data.data.episodes;            // v2 nesting
-    if (data?.episodes) return data.episodes;                       // v1 standard
-    if (data?.anime?.episodes) return data.anime.episodes;          // Consumet
-
     return [];
 };
 
-// --- 5. MAIN CONTROLLER ---
+/**
+ * 🎮 4. MAIN CONTROLLER
+ */
 const extractAndUpload = async (mainUrl, animeName, languageTag) => {
     try {
         const Episode = mongoose.model('Episode');
         const Series = mongoose.model('Series');
 
-        console.log(`🚀 Starting Sync (Brute-Force Mode): ${animeName}`);
+        // Extract ID
+        let animeId = mainUrl.split('/').pop().split('?')[0];
+        if (mainUrl.includes('/watch/')) {
+            animeId = mainUrl.split('/watch/')[1].split('?')[0];
+        }
 
-        // ID Extraction
-        let animeId = "";
-        try {
-            const urlObj = new URL(mainUrl);
-            const pathSegments = urlObj.pathname.split('/').filter(Boolean);
-            if (pathSegments.includes('watch')) {
-                animeId = pathSegments[pathSegments.indexOf('watch') + 1];
-            } else {
-                animeId = pathSegments[pathSegments.length - 1];
-            }
-            if (animeId.includes('?')) animeId = animeId.split('?')[0];
-        } catch (e) { return; }
-
-        console.log(`ℹ️ Extracted ID: ${animeId}`);
-
-        // Series Check
+        // DB Series check
         let series = await Series.findOne({ title: new RegExp(`^${animeName}`, 'i') });
         if (!series) {
             series = await Series.create({ 
@@ -145,30 +131,25 @@ const extractAndUpload = async (mainUrl, animeName, languageTag) => {
             });
         }
 
-        // Get Episodes
         const episodes = await getEpisodesFromApi(animeId);
-        console.log(`🔍 Found ${episodes.length} episodes via API.`);
 
-        if (episodes.length === 0) {
-            console.log("⚠️ 0 Episodes. API active hai par structure match nahi hua.");
+        if (!episodes || episodes.length === 0) {
+            console.log("⚠️ 0 Episodes. Normalizer failed to find episodes key.");
             return;
         }
 
         for (let ep of episodes) {
             try {
-                const epNum = ep.number; 
+                const epNum = ep.number || ep.num;
                 const existing = await Episode.findOne({ seriesId: series._id, episodeNumber: epNum });
-                if (existing && existing.status === 'completed') {
-                    console.log(`⏭️ Skipping Ep ${epNum}`);
-                    continue;
-                }
+                if (existing && existing.status === 'completed') continue;
 
-                const directLink = await getLinkFromApi(ep.episodeId);
+                // Important: Kuch APIs me 'episodeId' hota hai, kuch me 'id'
+                const targetId = ep.episodeId || ep.id;
+                const directLink = await getLinkFromApi(targetId);
                 
                 if (directLink) {
-                    console.log(`📡 Sending Ep ${epNum} to DoodStream...`);
                     const fileCode = await addRemoteUpload(directLink);
-
                     if (fileCode) {
                         await Episode.findOneAndUpdate(
                             { seriesId: series._id, episodeNumber: epNum },
@@ -176,22 +157,18 @@ const extractAndUpload = async (mainUrl, animeName, languageTag) => {
                                 remoteId: fileCode,
                                 downloadLink: `https://dood.li/d/${fileCode}`,
                                 status: 'processing', 
-                                title: ep.title 
+                                title: ep.title || `Episode ${epNum}`
                             },
                             { upsert: true }
                         );
-                        console.log(`✅ Ep ${epNum} Queued! Code: ${fileCode}`);
+                        console.log(`✅ Ep ${epNum} Queued!`);
                     }
-                } else {
-                    console.log(`❌ No Link Ep ${epNum}`);
                 }
-            } catch (err) { console.error(err.message); }
-            await sleep(2000); 
+            } catch (err) { console.error("Loop Error:", err.message); }
+            await sleep(2000);
         }
-        console.log(`🏁 Sync Finished`);
-
     } catch (err) {
-        console.error(`💥 GLOBAL CRASH: ${err.message}`);
+        console.error("Global Error:", err.message);
     }
 };
 
