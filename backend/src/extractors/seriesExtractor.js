@@ -4,26 +4,45 @@ const mongoose = require('mongoose');
 // ==========================================
 // ⚙️ SYSTEM CONFIGURATION
 // ==========================================
+// User provided API URL
 const API_BASE_URL = "https://hianime-api-seven-teal.vercel.app"; 
-const MIN_YEAR = 2010;             // Sirf is saal ke baad wale anime
-const MAX_PAGES_PER_LETTER = 20;   // Har letter (A, B...) ke liye kitne page deep jana hai
-const RETRY_LIMIT = 3;             // Upload fail hone par kitni baar try kare
-const DELAY_BETWEEN_EPS = 2000;    // 2 Seconds wait
-const DELAY_BETWEEN_ANIMES = 4000; // 4 Seconds wait
 
-// Crawl Order: A se Z tak + Numbers
+const MIN_YEAR = 2010;             // 2010 se purane anime SKIP honge
+const MAX_PAGES_PER_LETTER = 10;   // Har letter (A, B...) ke liye kitne pages deep jana hai
+const RETRY_LIMIT = 3;             // Upload fail hone par kitni baar try kare
+const DELAY_BETWEEN_EPS = 2000;    // 2 Seconds wait between episodes
+const DELAY_BETWEEN_ANIMES = 4000; // 4 Seconds wait between animes
+
+// Crawl Order: a-z aur 0-9 sab search karega
 const SEARCH_KEYWORDS = "abcdefghijklmnopqrstuvwxyz0123456789".split(""); 
 
-// 🔒 GLOBAL LOCK (To prevent multiple starts)
+// 🔒 GLOBAL LOCK (Taaki multiple clicks se server crash na ho)
 let isCrawling = false;
 
 // ==========================================
-// 🛠️ DATA NORMALIZER (Sabse Important Part)
+// 🛠️ DATA NORMALIZER & HELPERS
 // ==========================================
+
+// Sleep function to prevent rate limits
+const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+
+// Extract Year from metadata string (e.g., "Apr 2016")
+const extractYear = (info) => {
+    try {
+        let yearString = "";
+        if (info.moreInfo && info.moreInfo.aired) yearString = info.moreInfo.aired;
+        else if (info.anime?.info?.stats?.aired) yearString = info.anime.info.stats.aired;
+
+        const match = yearString.match(/\d{4}/);
+        if (match) return parseInt(match[0]);
+    } catch (e) {}
+    return 0;
+};
+
+// Handle different API response structures
 function normalizeData(data, type) {
     if (!data) return null;
 
-    // API ke alag-alag structures ko handle karta hai
     if (type === 'list') { 
         if (data.data?.animes) return data.data.animes;
         if (data.animes) return data.animes;
@@ -45,40 +64,25 @@ function normalizeData(data, type) {
     return null;
 }
 
-// Helper: Sleep
-const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
-
-// Helper: Extract Year from string like "Apr 2016"
-const extractYear = (info) => {
-    try {
-        let yearString = "";
-        if (info.moreInfo && info.moreInfo.aired) yearString = info.moreInfo.aired;
-        else if (info.anime?.info?.stats?.aired) yearString = info.anime.info.stats.aired;
-
-        const match = yearString.match(/\d{4}/);
-        if (match) return parseInt(match[0]);
-    } catch (e) {}
-    return 0;
-};
-
 // ==========================================
 // 🌐 API FETCHING FUNCTIONS
 // ==========================================
 
-// 1. Search Anime (Ye endpoint hamesha chalta hai)
+// 1. Search Anime (List Replacement)
 const searchAnime = async (keyword, page) => {
+    // Search endpoint usually always works
     const url = `${API_BASE_URL}/hianime/search?q=${keyword}&page=${page}`;
     try {
         console.log(`\n📑 [SEARCH: '${keyword.toUpperCase()}'] Fetching Page ${page}...`);
         const { data } = await axios.get(url);
         return normalizeData(data, 'list') || [];
     } catch (e) {
-        // 404 means no more pages for this letter
+        // 404 means page doesn't exist (end of list)
         return []; 
     }
 };
 
-// 2. Get Details (Year check karne ke liye)
+// 2. Get Anime Details (For Year & Seasons Check)
 const getAnimeDetails = async (animeId) => {
     const url = `${API_BASE_URL}/hianime/anime/${animeId}`;
     try {
@@ -104,14 +108,14 @@ const getEpisodesFromApi = async (animeId) => {
     return [];
 };
 
-// 4. Get Streaming Link
+// 4. Get Streaming Link (Source Extraction)
 const getLinkFromApi = async (episodeId) => {
     const url = `${API_BASE_URL}/hianime/episode/sources?animeEpisodeId=${episodeId}&server=vidstreaming&category=sub`;
     try {
         const { data } = await axios.get(url);
         const sources = normalizeData(data, 'sources');
         if (sources?.length > 0) {
-            // Priority: Auto > 1080p > Default
+            // Priority: Auto > 1080p > Default > First available
             const source = sources.find(s => s.quality === 'auto') || 
                            sources.find(s => s.quality === '1080p') || 
                            sources.find(s => s.quality === 'default') || 
@@ -122,7 +126,7 @@ const getLinkFromApi = async (episodeId) => {
     return null;
 };
 
-// 5. Upload to DoodStream (With Retry)
+// 5. Upload to DoodStream (With Retry Logic)
 const addRemoteUpload = async (videoUrl) => {
     const key = process.env.DOODSTREAM_KEY;
     if (!key) {
@@ -137,10 +141,10 @@ const addRemoteUpload = async (videoUrl) => {
             if (data.status === 200 && data.result && data.result.filecode) {
                 return data.result.filecode;
             }
-            // Agar server busy hai toh 1 sec ruko
+            // Wait 1 sec before retry
             await sleep(1000); 
         } catch (e) {
-            // console.log("Upload retry...");
+            // Retry silently
         }
     }
     return null;
@@ -155,7 +159,7 @@ const syncSingleSeason = async (id, title) => {
 
     console.log(`🎬 [SYNC START] ${title} (ID: ${id})`);
 
-    // 1. Database Check
+    // 1. Create or Find Series
     let series = await Series.findOne({ title: new RegExp(`^${title}`, 'i') });
     if (!series) {
         series = await Series.create({ 
@@ -169,27 +173,27 @@ const syncSingleSeason = async (id, title) => {
     // 2. Fetch Episodes
     const episodes = await getEpisodesFromApi(id);
     if (!episodes || episodes.length === 0) {
-        console.log(`⚠️ No episodes found. Skipping.`);
+        console.log(`⚠️ No episodes found for ${title}. Skipping.`);
         return;
     }
 
-    // 3. Process Loop
+    // 3. Process Episodes
     for (let ep of episodes) {
         try {
             const epNum = ep.number || ep.num;
             
-            // Check existence
+            // Check if already exists
             const existing = await Episode.findOne({ seriesId: series._id, episodeNumber: epNum });
             if (existing && existing.status === 'completed') {
                 continue; // Skip silently
             }
 
-            // Fetch Link
+            // Fetch Direct Link
             const targetId = ep.episodeId || ep.id;
             const directLink = await getLinkFromApi(targetId);
             
             if (directLink) {
-                // Upload
+                // Upload to DoodStream
                 const fileCode = await addRemoteUpload(directLink);
                 if (fileCode) {
                     await Episode.findOneAndUpdate(
@@ -207,7 +211,7 @@ const syncSingleSeason = async (id, title) => {
             } else {
                 console.log(`❌ No link for Ep ${epNum}`);
             }
-            await sleep(DELAY_BETWEEN_EPS); // Break
+            await sleep(DELAY_BETWEEN_EPS); // Polite delay
         } catch (err) { }
     }
     console.log(`✅ Season Done: ${title}`);
@@ -220,11 +224,11 @@ const processAnimeFilter = async (anime) => {
     const id = anime.id;
     const title = anime.name || anime.title;
 
-    // 1. Details fetch karo
+    // 1. Fetch Details (for Year check)
     const info = await getAnimeDetails(id);
     if (!info) return;
 
-    // 2. Year check karo
+    // 2. Year Filter
     const year = extractYear(info);
     if (year > 0 && year < MIN_YEAR) {
         console.log(`🛑 [SKIP] Old Anime: ${title} (${year})`);
@@ -233,7 +237,7 @@ const processAnimeFilter = async (anime) => {
 
     console.log(`🟢 [PASS] ${title} (${year || 'Unknown'})`);
 
-    // 3. Seasons Check
+    // 3. Seasons Check (Chronological Order)
     if (info.seasons && info.seasons.length > 0) {
         console.log(`📚 Found ${info.seasons.length} seasons.`);
         for (let season of info.seasons) {
@@ -249,29 +253,29 @@ const processAnimeFilter = async (anime) => {
 // 🚀 MAIN EXECUTION (ENTRY POINT)
 // ==========================================
 const extractAndUpload = async (mainUrl, animeName, languageTag) => {
-    // 🔒 LOCK SYSTEM
+    // 🔒 LOCK CHECK
     if (isCrawling) {
         console.log("⚠️ CRAWLER IS BUSY! Request ignored.");
         return;
     }
-    isCrawling = true; 
+    isCrawling = true; // Lock
 
     try {
         console.log(`\n🚀 INITIALIZING A-Z ARCHIVE CRAWLER...`);
         console.log(`🎯 Strategy: Search A-Z (Pages 1-${MAX_PAGES_PER_LETTER})`);
         console.log(`📅 Filter: Year >= ${MIN_YEAR}`);
 
-        // Loop A to Z
+        // Loop through A-Z and 0-9
         for (const letter of SEARCH_KEYWORDS) {
             console.log(`\n🔠 STARTING LETTER: ${letter.toUpperCase()}`);
 
             for (let page = 1; page <= MAX_PAGES_PER_LETTER; page++) {
                 
-                // Search Call
+                // Fetch Search Results
                 const animeList = await searchAnime(letter, page);
                 
                 if (!animeList || animeList.length === 0) {
-                    console.log(`⚠️ No more data for '${letter}'. Next letter.`);
+                    console.log(`⚠️ No more data for letter '${letter}' at page ${page}. Moving to next letter.`);
                     break; 
                 }
 
@@ -289,7 +293,7 @@ const extractAndUpload = async (mainUrl, animeName, languageTag) => {
     } catch (err) {
         console.error(`💥 CRASH: ${err.message}`);
     } finally {
-        isCrawling = false; // Unlock
+        isCrawling = false; // Release Lock
         console.log("🔓 Crawler Lock Released.");
     }
 };
